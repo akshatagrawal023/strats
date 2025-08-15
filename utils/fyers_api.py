@@ -16,7 +16,7 @@ import config
 from config import client_id, secret_key, redirect_uri, state, grant_type, response_type, pin
 
 # File paths
-TOKEN_STORE_FILE = os.path.join(PARENT_DIR, 'token_store.json')
+TOKEN_STORE_FILE = os.path.join(current_dir, 'token_store.json')
 
 def load_token_store():
     """Load saved tokens and expiry info from disk."""
