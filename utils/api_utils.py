@@ -157,6 +157,16 @@ def get_positions():
     fyers = FyersInstance.get_instance()
     return fyers_rate_limited_api_call(fyers.positions)
 
+def get_option_chain(symbol, strikecount=1):
+    data = {
+    "symbol":symbol,
+    "strikecount":strikecount,
+    "timestamp": ""
+    }
+    fyers = FyersInstance.get_instance()
+    response = fyers_rate_limited_api_call(fyers.optionchain, data=data)
+    return response
+
 def get_orderbook(order_id=None):
     """
     Get orderbook data

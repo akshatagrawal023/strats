@@ -12,8 +12,7 @@ import requests
 current_dir = os.path.dirname(os.path.abspath(__file__))
 PARENT_DIR = os.path.dirname(current_dir)
 sys.path.append(PARENT_DIR)
-import config
-from config import client_id, secret_key, redirect_uri, state, grant_type, response_type, pin
+from utils.config import client_id, secret_key, redirect_uri, state, grant_type, response_type, pin
 
 # File paths
 TOKEN_STORE_FILE = os.path.join(current_dir, 'token_store.json')

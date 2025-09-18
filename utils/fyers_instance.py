@@ -1,7 +1,7 @@
 import os, sys
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from data.fyers_api import get_access_token
-from config import client_id 
+from utils.fyers_api import get_access_token
+from utils.config import client_id 
 from fyers_apiv3 import fyersModel
 
 

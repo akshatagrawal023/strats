@@ -3,8 +3,6 @@ Live configuration for the gamma scalper targeting NIFTY.
 
 Adjust expiry, lot sizes, and symbols per your broker/exchange.
 """
-
-
 class Config:
     # Underlying selection
     GAMMA_BASE = "NIFTY"  # NIFTY index
