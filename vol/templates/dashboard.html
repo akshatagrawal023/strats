@@ -1,0 +1,66 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Live Options Greeks Dashboard</title>
+    <style>
+        body { font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; background:#0b1020; color:#e8ecf1; margin:0; padding:24px; }
+        .container { max-width: 880px; margin: 0 auto; }
+        h1 { font-weight:600; letter-spacing:0.3px; }
+        .table-container { background:#121936; border-radius:12px; padding:16px; box-shadow: 0 6px 24px rgba(0,0,0,0.35); }
+        table { width:100%; border-collapse: collapse; }
+        th, td { padding: 12px 14px; text-align:left; }
+        thead th { color:#a6b0cf; font-weight:600; border-bottom:1px solid #2a355e; }
+        tbody tr:hover { background:#111a3a; }
+        td.value { font-feature-settings: "tnum" on, "lnum" on; font-variant-numeric: tabular-nums lining-nums; color:#f0f6ff; }
+        .timestamp { color:#8b97b3; font-size:12px; margin-top:8px; }
+        .pill { display:inline-block; padding:4px 10px; border-radius:999px; background:#1e2a57; color:#c7d2fe; font-size:12px; }
+        .grid { display:grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap:12px; margin-bottom:16px; }
+    </style>
+    <script src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
+</head>
+<body>
+<div class="container">
+    <h1>Live Options Greeks <span id="symbol" class="pill">SBIN</span></h1>
+    <div class="table-container">
+        <table class="greeks-table">
+            <thead>
+                <tr>
+                    <th>Metric</th>
+                    <th>Value</th>
+                    <th>Interpretation</th>
+                </tr>
+            </thead>
+            <tbody>
+                <tr><td>Underlying</td><td id="underlying" class="value">—</td><td>SBIN Current Price</td></tr>
+                <tr><td>Delta</td><td id="delta" class="value">—</td><td>Directional exposure</td></tr>
+                <tr><td>Gamma</td><td id="gamma" class="value">—</td><td>Delta sensitivity</td></tr>
+                <tr><td>Theta</td><td id="theta" class="value">—</td><td>Daily time decay (₹)</td></tr>
+                <tr><td>Vega</td><td id="vega" class="value">—</td><td>Volatility exposure (per 1%)</td></tr>
+                <tr><td>Net Exposure</td><td id="net_exposure" class="value">—</td><td>Delta * Price</td></tr>
+            </tbody>
+        </table>
+        <div class="timestamp">Last update: <span id="ts">—</span></div>
+    </div>
+</div>
+
+<script>
+  const socket = io();
+  const el = id => document.getElementById(id);
+  socket.on('connect', () => {
+    console.log('Connected');
+  });
+  socket.on('greeks_update', (data) => {
+    el('underlying').textContent = data.underlying ?? '—';
+    el('delta').textContent = data.delta ?? '—';
+    el('gamma').textContent = data.gamma ?? '—';
+    el('theta').textContent = data.theta ?? '—';
+    el('vega').textContent = data.vega ?? '—';
+    el('net_exposure').textContent = data.net_exposure ?? '—';
+    el('ts').textContent = new Date().toLocaleTimeString();
+  });
+</script>
+</body>
+</html>
+

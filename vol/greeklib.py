@@ -111,11 +111,11 @@ class VolatilityDashboard:
                                  option_type: np.ndarray) -> Tuple:
         """Vectorized Black-Scholes implementation using Numba"""
         n = len(S)
-        prices = np.empty(n)
-        deltas = np.empty(n)
-        gammas = np.empty(n)
-        thetas = np.empty(n)
-        vegas = np.empty(n)
+        prices = np.empty(n, dtype=np.float64)
+        deltas = np.empty(n, dtype=np.float64)
+        gammas = np.empty(n, dtype=np.float64)
+        thetas = np.empty(n, dtype=np.float64)
+        vegas = np.empty(n, dtype=np.float64)
         
         for i in prange(n):
             # Use local variable to avoid mutating input

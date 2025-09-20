@@ -14,6 +14,7 @@ import time
 from rich.console import Console
 from rich.table import Table
 from rich.live import Live
+from vol.front_end import run_web_dashboard, broadcast_greeks
 
 console = Console()
 
@@ -56,6 +57,9 @@ def display_greeks_table(aggregated, underlying_price):
 
 if __name__ == "__main__":
     symbol = "NSE:SBIN-EQ"  
+    # Start web dashboard server in background
+    run_web_dashboard()
+    
     with Live(console=console, refresh_per_second=4) as live:
         while True:
             data = get_option_chain(symbol, strikecount=1)
@@ -65,6 +69,17 @@ if __name__ == "__main__":
             
             table = display_greeks_table(aggregated, dashboard.underlying_data['price'])
             live.update(table)
+            
+            # Broadcast to web dashboard
+            payload = {
+                'underlying': f"₹{dashboard.underlying_data['price']:.2f}",
+                'delta': f"{aggregated['delta']:.3f}",
+                'gamma': f"{aggregated['gamma']:.6f}",
+                'theta': f"{aggregated['theta']:.3f}",
+                'vega': f"{aggregated['vega']:.3f}",
+                'net_exposure': f"₹{aggregated['net_exposure']:.2f}"
+            }
+            broadcast_greeks(payload)
             
             time.sleep(0.25)
 
