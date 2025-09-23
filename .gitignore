@@ -4,6 +4,11 @@
 .env.production
 .env.staging
 
+Strats/
+venv/
+env/
+ENV/
+
 # Fyers API tokens and authentication
 access_token.txt
 authcode.txt
