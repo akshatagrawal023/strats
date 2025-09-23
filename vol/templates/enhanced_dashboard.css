@@ -1,0 +1,247 @@
+/* Enhanced Options Chain Dashboard Styles */
+body {
+    font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif;
+    background: #0b1020;
+    color: #e8ecf1;
+    margin: 0;
+    padding: 24px;
+    line-height: 1.6;
+}
+
+.container {
+    max-width: 1400px;
+    margin: 0 auto;
+}
+
+/* Market Overview */
+.market-overview {
+    margin-bottom: 32px;
+}
+
+.market-overview h1 {
+    font-weight: 600;
+    letter-spacing: 0.3px;
+    margin-bottom: 24px;
+    color: #f0f6ff;
+}
+
+.market-stats {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+    gap: 16px;
+    margin-bottom: 24px;
+}
+
+.stat-card {
+    background: #121936;
+    border-radius: 12px;
+    padding: 20px;
+    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.3);
+    border: 1px solid #2a355e;
+}
+
+.stat-label {
+    color: #a6b0cf;
+    font-size: 14px;
+    font-weight: 500;
+    margin-bottom: 8px;
+}
+
+.stat-value {
+    color: #f0f6ff;
+    font-size: 24px;
+    font-weight: 600;
+    margin-bottom: 4px;
+}
+
+.stat-change {
+    font-size: 14px;
+    font-weight: 500;
+}
+
+/* Greeks Summary */
+.greeks-summary {
+    margin-bottom: 32px;
+}
+
+.greeks-summary h2 {
+    color: #f0f6ff;
+    margin-bottom: 16px;
+    font-weight: 600;
+}
+
+.greeks-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+    gap: 16px;
+}
+
+.greek-card {
+    background: #1a1f3a;
+    border-radius: 8px;
+    padding: 16px;
+    border-left: 4px solid #3b82f6;
+}
+
+.greek-label {
+    color: #a6b0cf;
+    font-size: 12px;
+    font-weight: 500;
+    margin-bottom: 8px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+}
+
+.greek-value {
+    color: #f0f6ff;
+    font-size: 20px;
+    font-weight: 600;
+    font-feature-settings: "tnum" on, "lnum" on;
+    font-variant-numeric: tabular-nums lining-nums;
+}
+
+/* Table Container */
+.table-container {
+    background: #121936;
+    border-radius: 12px;
+    padding: 24px;
+    box-shadow: 0 6px 24px rgba(0, 0, 0, 0.35);
+    margin-bottom: 24px;
+}
+
+.table-container h2 {
+    color: #f0f6ff;
+    margin-bottom: 20px;
+    font-weight: 600;
+}
+
+.table-wrapper {
+    overflow-x: auto;
+}
+
+.options-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 14px;
+}
+
+.options-table th {
+    background: #1a1f3a;
+    color: #a6b0cf;
+    font-weight: 600;
+    padding: 12px 8px;
+    text-align: left;
+    border-bottom: 2px solid #2a355e;
+    position: sticky;
+    top: 0;
+    z-index: 10;
+}
+
+.options-table td {
+    padding: 10px 8px;
+    border-bottom: 1px solid #2a355e;
+}
+
+.options-table tbody tr:hover {
+    background: #111a3a;
+}
+
+/* Column-specific styling */
+.strike {
+    color: #3b82f6;
+    font-weight: 600;
+}
+
+.type {
+    font-weight: 600;
+    text-align: center;
+}
+
+.type.ce {
+    color: #10b981;
+}
+
+.type.pe {
+    color: #ef4444;
+}
+
+.bid {
+    color: #10b981;
+    font-feature-settings: "tnum" on, "lnum" on;
+    font-variant-numeric: tabular-nums lining-nums;
+}
+
+.ask {
+    color: #ef4444;
+    font-feature-settings: "tnum" on, "lnum" on;
+    font-variant-numeric: tabular-nums lining-nums;
+}
+
+.ltp {
+    color: #f0f6ff;
+    font-weight: 600;
+    font-feature-settings: "tnum" on, "lnum" on;
+    font-variant-numeric: tabular-nums lining-nums;
+}
+
+.volume, .oi {
+    color: #a6b0cf;
+    font-feature-settings: "tnum" on, "lnum" on;
+    font-variant-numeric: tabular-nums lining-nums;
+}
+
+.delta {
+    color: #3b82f6;
+    font-feature-settings: "tnum" on, "lnum" on;
+    font-variant-numeric: tabular-nums lining-nums;
+}
+
+.gamma {
+    color: #f59e0b;
+    font-feature-settings: "tnum" on, "lnum" on;
+    font-variant-numeric: tabular-nums lining-nums;
+}
+
+.theta {
+    color: #ef4444;
+    font-feature-settings: "tnum" on, "lnum" on;
+    font-variant-numeric: tabular-nums lining-nums;
+}
+
+.vega {
+    color: #10b981;
+    font-feature-settings: "tnum" on, "lnum" on;
+    font-variant-numeric: tabular-nums lining-nums;
+}
+
+/* Timestamp */
+.timestamp {
+    color: #8b97b3;
+    font-size: 12px;
+    text-align: center;
+    margin-top: 16px;
+}
+
+/* Responsive design */
+@media (max-width: 768px) {
+    .container {
+        padding: 16px;
+    }
+    
+    .market-stats {
+        grid-template-columns: repeat(2, 1fr);
+    }
+    
+    .greeks-grid {
+        grid-template-columns: repeat(2, 1fr);
+    }
+    
+    .options-table {
+        font-size: 12px;
+    }
+    
+    .options-table th,
+    .options-table td {
+        padding: 8px 4px;
+    }
+}

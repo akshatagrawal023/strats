@@ -1,0 +1,162 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Enhanced Options Chain Dashboard</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/enhanced_dashboard.css') }}">
+    <script src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
+</head>
+<body>
+<div class="container">
+    <!-- Market Overview -->
+    <div class="market-overview">
+        <h1>Live Options Chain Dashboard</h1>
+        <div class="market-stats">
+            <div class="stat-card">
+                <div class="stat-label">Underlying</div>
+                <div class="stat-value" id="underlying">—</div>
+                <div class="stat-change" id="underlying-change">—</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-label">INDIA VIX</div>
+                <div class="stat-value" id="india-vix">—</div>
+                <div class="stat-change" id="vix-change">—</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-label">Total Options</div>
+                <div class="stat-value" id="total-options">—</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-label">Expiries</div>
+                <div class="stat-value" id="expiries">—</div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Greeks Summary -->
+    <div class="greeks-summary">
+        <h2>Aggregated Greeks</h2>
+        <div class="greeks-grid">
+            <div class="greek-card">
+                <div class="greek-label">Total Delta</div>
+                <div class="greek-value" id="total-delta">—</div>
+            </div>
+            <div class="greek-card">
+                <div class="greek-label">Total Gamma</div>
+                <div class="greek-value" id="total-gamma">—</div>
+            </div>
+            <div class="greek-card">
+                <div class="greek-label">Total Theta</div>
+                <div class="greek-value" id="total-theta">—</div>
+            </div>
+            <div class="greek-card">
+                <div class="greek-label">Total Vega</div>
+                <div class="greek-value" id="total-vega">—</div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Options Chain Table -->
+    <div class="table-container">
+        <h2>Options Chain with Greeks</h2>
+        <div class="table-wrapper">
+            <table class="options-table">
+                <thead>
+                    <tr>
+                        <th>Strike</th>
+                        <th>Type</th>
+                        <th>Bid</th>
+                        <th>Ask</th>
+                        <th>LTP</th>
+                        <th>Volume</th>
+                        <th>OI</th>
+                        <th>Delta</th>
+                        <th>Gamma</th>
+                        <th>Theta</th>
+                        <th>Vega</th>
+                    </tr>
+                </thead>
+                <tbody id="options-tbody">
+                    <!-- Options data will be populated here -->
+                </tbody>
+            </table>
+        </div>
+    </div>
+
+    <!-- Timestamp -->
+    <div class="timestamp">Last update: <span id="timestamp">—</span></div>
+</div>
+
+<script>
+const socket = io();
+const el = id => document.getElementById(id);
+
+// Store options data for display
+let optionsData = [];
+
+socket.on('connect', () => {
+    console.log('Connected to options chain feed');
+});
+
+socket.on('greeks_update', (data) => {
+    // Update market overview
+    el('underlying').textContent = data.underlying || '—';
+    el('underlying-change').textContent = data.underlying_change || '—';
+    el('india-vix').textContent = data.india_vix || '—';
+    el('vix-change').textContent = data.vix_change || '—';
+    el('total-options').textContent = data.total_options || '—';
+    el('expiries').textContent = data.expiries || '—';
+    
+    // Update Greeks summary
+    el('total-delta').textContent = data.total_delta || '—';
+    el('total-gamma').textContent = data.total_gamma || '—';
+    el('total-theta').textContent = data.total_theta || '—';
+    el('total-vega').textContent = data.total_vega || '—';
+    
+    // Update timestamp
+    el('timestamp').textContent = data.timestamp || new Date().toLocaleTimeString();
+    
+    // Update options table if data is available
+    if (data.options_chain) {
+        updateOptionsTable(data.options_chain);
+    }
+});
+
+function updateOptionsTable(options) {
+    const tbody = el('options-tbody');
+    tbody.innerHTML = '';
+    
+    options.forEach(option => {
+        const row = document.createElement('tr');
+        row.innerHTML = `
+            <td class="strike">${option.strike}</td>
+            <td class="type ${option.type.toLowerCase()}">${option.type}</td>
+            <td class="bid">${option.bid}</td>
+            <td class="ask">${option.ask}</td>
+            <td class="ltp">${option.price}</td>
+            <td class="volume">${option.volume}</td>
+            <td class="oi">${option.oi}</td>
+            <td class="delta">${option.delta}</td>
+            <td class="gamma">${option.gamma}</td>
+            <td class="theta">${option.theta}</td>
+            <td class="vega">${option.vega}</td>
+        `;
+        tbody.appendChild(row);
+    });
+}
+
+// Add color coding for changes
+function updateChangeColor(element, value) {
+    const numValue = parseFloat(value);
+    if (numValue > 0) {
+        element.style.color = '#10b981';
+    } else if (numValue < 0) {
+        element.style.color = '#ef4444';
+    } else {
+        element.style.color = '#6b7280';
+    }
+}
+</script>
+</body>
+</html>
