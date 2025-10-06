@@ -21,6 +21,9 @@ db_name = os.getenv("postgrey_db")
 db_user = os.getenv("user_db")
 db_password = os.getenv("password_db")
 
+td_username = os.getenv("TD_USERNAME")
+td_password = os.getenv("TD_PASSWORD")
+
 if not all([client_id, secret_key, redirect_uri]):
     raise ValueError("Missing environment variables. Check your .env file.")
                         ## app_secret key which you got after creating the app                                 ##  The state field here acts as a session manager. you will be sent with the state field after successfull generation of auth_code 
