@@ -1,6 +1,6 @@
 # Set default behavior to automatically normalize line endings
 * text=auto
-
+*.ipynb -text eol=lf
 # Explicitly declare text files you want to always be normalized
 *.py text
 *.js text
