@@ -3,16 +3,17 @@ import pandas as pd
 from collections import defaultdict
 from datetime import datetime
 import time
-from option_chain import get_option_chain
 import sys
 import os
-
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from utils.api_utils import get_option_chain
 
 class OptionDataProcessor:
     def __init__(self, window_size=300, feature_window=20):
         self.window_size = window_size
         self.feature_window = feature_window
         self.data = {}  # underlying -> structured data
+        self.df_data = {}  # underlying -> list of DataFrame rows
         
     def init_underlying(self, underlying, strikes):
         """Initialize data structures for one underlying"""
@@ -27,41 +28,98 @@ class OptionDataProcessor:
     def process_option_chain(self, underlying, resp):
         """Process option chain response and store data"""
         if not resp or resp.get('s') != 'ok':
+            print(f"Invalid response for {underlying}")
             return
             
         data = resp['data']
         options = data.get('optionsChain', [])
         ts = time.time()
         
-        # Initialize if not exists
+        # Initialize if not exists - extract strikes directly from CE/PE pairs (no pre-iteration!)
         if underlying not in self.data:
-            # Extract strikes from response
-            strikes = sorted(set(row.get('strike_price') for row in options 
-                              if row.get('strike_price') and row.get('strike_price') > 0))
+            # Fast strike extraction: options[1], options[3], options[5]... are CE rows
+            strikes = sorted([options[i].get('strike_price') for i in range(1, len(options), 2) 
+                            if i < len(options) and options[i].get('strike_price')])
             self.init_underlying(underlying, strikes)
+            
+            # Initialize matrix and mappings
+            self.data[underlying]['strike_to_idx'] = {s: i for i, s in enumerate(strikes)}
+            self.data[underlying]['timestamps'] = []  # Store timestamps for indexing
+            self.data[underlying]['matrix_data'] = []  # List of (timestamp, matrix_slice)
         
         store = self.data[underlying]
+        strike_to_idx = store['strike_to_idx']
         idx = store['index'] % self.window_size
         
-        # Process each row in optionsChain
-        for row in options:
-            symbol = row.get('symbol', '')
-            option_type = row.get('option_type', '')
-            strike = row.get('strike_price')
+        # Create matrix for this timestamp (channels x strikes)
+        num_strikes = len(store['strikes'])
+        mat = np.full((8, num_strikes), np.nan, dtype=float)
+        
+        # Create minimal row data (keep DF small; matrices hold rich data)
+        row_data = {'timestamp': ts}
+        
+        # Fast processing leveraging fixed pattern: first row = underlying/future, rest = CE/PE pairs
+        if len(options) > 0:
+            # First row is always underlying or future
+            first_row = options[0]
+            if 'FUT' not in first_row.get('symbol', ''):
+                store['underlying'][idx] = [ts, first_row.get('ltp', 0), first_row.get('bid', 0), first_row.get('ask', 0)]
+                row_data['underlying_ltp'] = first_row.get('ltp', 0)
+        
+        # Process options in pairs (CE, PE, CE, PE...) - skip first row (underlying)
+        for i in range(1, len(options), 2):
+            if i + 1 >= len(options):
+                break
             
-            if option_type == '':  # Underlying or future
-                if 'FUT' in symbol:
-                    store['future'][idx] = [ts, row.get('ltp', 0), row.get('bid', 0), row.get('ask', 0)]
-                else:  # Underlying EQ
-                    store['underlying'][idx] = [ts, row.get('ltp', 0), row.get('bid', 0), row.get('ask', 0)]
-            elif option_type in ['CE', 'PE'] and strike:
-                if strike in store['strikes']:
-                    strike_idx = store['strikes'].index(strike)
-                    option_idx = strike_idx * 2 + (0 if option_type == 'CE' else 1)
-                    store['options'][idx, option_idx] = [
-                        ts, row.get('ltp', 0), row.get('bid', 0), row.get('ask', 0),
-                        row.get('oi', 0), row.get('oich', 0)
-                    ]
+            ce_row = options[i]      # Call
+            pe_row = options[i + 1]  # Put
+            
+            strike = ce_row.get('strike_price')
+            if strike is None or strike not in strike_to_idx:
+                continue
+            
+            si = strike_to_idx[strike]
+            
+            # Process CE (Call) - mat[channel, strike_index]
+            ce_bid = ce_row.get('bid')
+            ce_ask = ce_row.get('ask')
+            ce_vol = ce_row.get('volume')
+            ce_oi = ce_row.get('oi')
+            
+            if ce_bid is not None: mat[0, si] = ce_bid
+            if ce_ask is not None: mat[1, si] = ce_ask
+            if ce_vol is not None: mat[4, si] = ce_vol
+            if ce_oi is not None:  mat[6, si] = ce_oi
+            
+            # Process PE (Put)
+            pe_bid = pe_row.get('bid')
+            pe_ask = pe_row.get('ask')
+            pe_vol = pe_row.get('volume')
+            pe_oich = pe_row.get('oich')
+            
+            if pe_bid is not None: mat[2, si] = pe_bid
+            if pe_ask is not None: mat[3, si] = pe_ask
+            if pe_vol is not None: mat[5, si] = pe_vol
+            if pe_oich is not None: mat[7, si] = pe_oich
+        
+        # Store matrix with timestamp as index
+        store['timestamps'].append(ts)
+        store['matrix_data'].append(mat)
+        
+        # Keep only last window_size rows
+        if len(store['timestamps']) > self.window_size:
+            store['timestamps'] = store['timestamps'][-self.window_size:]
+            store['matrix_data'] = store['matrix_data'][-self.window_size:]
+        
+        # Add to DataFrame data for this specific underlying
+        if underlying not in self.df_data:
+            self.df_data[underlying] = []
+        
+        self.df_data[underlying].append(row_data)
+        
+        # Keep only last 300 rows for this underlying
+        if len(self.df_data[underlying]) > self.window_size:
+            self.df_data[underlying] = self.df_data[underlying][-self.window_size:]
         
         store['index'] += 1
     
@@ -117,33 +175,149 @@ class OptionDataProcessor:
             'options': store['options'][latest_idx],
             'strikes': store['strikes']
         }
+    
+    def get_dataframe(self, underlying=None):
+        """Get the accumulated DataFrame for a specific underlying or all underlyings"""
+        if underlying:
+            # Return DataFrame for specific underlying with timestamp as index
+            if underlying not in self.df_data or not self.df_data[underlying]:
+                return pd.DataFrame()
+            df = pd.DataFrame(self.df_data[underlying])
+            if not df.empty and 'timestamp' in df.columns:
+                df['timestamp'] = pd.to_datetime(df['timestamp'], unit='s')
+                df.set_index('timestamp', inplace=True)
+            return df
+        else:
+            # Return combined DataFrame for all underlyings
+            if not self.df_data:
+                return pd.DataFrame()
+            
+            all_data = []
+            for u, data in self.df_data.items():
+                for row in data:
+                    row_copy = row.copy()
+                    row_copy['underlying'] = u
+                    all_data.append(row_copy)
+            
+            df = pd.DataFrame(all_data) if all_data else pd.DataFrame()
+            if not df.empty and 'timestamp' in df.columns:
+                df['timestamp'] = pd.to_datetime(df['timestamp'], unit='s')
+                df.set_index('timestamp', inplace=True)
+            return df
+    
+    def get_matrix(self, underlying, window=None):
+        """Get matrix data for underlying with timestamps
+        Returns: (timestamps, matrix_array)
+        matrix_array shape: (time_steps, channels, strikes)
+        """
+        if underlying not in self.data:
+            return None, None
+        
+        store = self.data[underlying]
+        if not store.get('timestamps') or not store.get('matrix_data'):
+            return None, None
+        
+        timestamps = store['timestamps']
+        matrices = store['matrix_data']
+        
+        if window:
+            timestamps = timestamps[-window:]
+            matrices = matrices[-window:]
+        
+        # Stack matrices into 3D array
+        matrix_array = np.stack(matrices, axis=0) if matrices else None
+        return timestamps, matrix_array
+    
+    def print_matrix(self, underlying, channel_names=None):
+        """Print latest matrix data in readable format"""
+        if channel_names is None:
+            channel_names = ['CE_BID', 'CE_ASK', 'PE_BID', 'PE_ASK', 
+                           'CE_VOL', 'PE_VOL', 'CE_OI', 'PE_OICH']
+        
+        timestamps, matrix_array = self.get_matrix(underlying, window=1)
+        if matrix_array is None:
+            print(f"No matrix data for {underlying}")
+            return
+        
+        store = self.data[underlying]
+        strikes = store['strikes']
+        
+        # Get latest matrix (last time step)
+        latest_mat = matrix_array[-1]  # shape: (channels, strikes)
+        
+        print(f"\n=== Matrix Data for {underlying} ===")
+        print(f"Timestamp: {pd.to_datetime(timestamps[-1], unit='s')}")
+        print(f"Strikes: {strikes}")
+        print(f"\nMatrix shape: (channels={len(channel_names)}, strikes={len(strikes)})")
+        
+        for ch_idx, ch_name in enumerate(channel_names):
+            print(f"\n{ch_name}:")
+            print(latest_mat[ch_idx])
+    
+    def save_to_hdf5(self, underlying, filepath):
+        """Save matrix data to HDF5 for efficient storage and retrieval
+        Usage: processor.save_to_hdf5('RELIANCE', 'data/reliance.h5')
+        """
+        timestamps, matrix_array = self.get_matrix(underlying)
+        if matrix_array is None:
+            print(f"No data to save for {underlying}")
+            return
+        
+        store = self.data[underlying]
+        
+        with pd.HDFStore(filepath, mode='a') as hdf:
+            # Save matrix as dataset
+            hdf.put(f'{underlying}/matrix', 
+                   pd.DataFrame(matrix_array.reshape(len(timestamps), -1),
+                               index=pd.to_datetime(timestamps, unit='s')))
+            
+            # Save metadata
+            hdf.put(f'{underlying}/strikes', pd.Series(store['strikes']))
+            hdf.get_storer(f'{underlying}/matrix').attrs.shape = matrix_array.shape
+        
+        print(f"Saved {underlying} data to {filepath}")
 
 # Usage example
 processor = OptionDataProcessor(window_size=300, feature_window=20)
+
 
 # Process option chain data
 def process_underlying_data(underlying, resp):
     processor.process_option_chain(underlying, resp)
     
-    # Get rolling features
-    features = processor.get_rolling_features(underlying)
-    if features:
-        print(f"Features for {underlying}:")
-        print(f"  Underlying MA: {features['underlying_ma']:.2f}")
-        print(f"  Future MA: {features['future_ma']:.2f}")
-        print(f"  Options MA: {features['options_ma']}")
+    # Get and print DataFrame for this specific underlying
+    df = processor.get_dataframe(underlying)
+    if not df.empty:
+        print(f"\n=== DataFrame for {underlying} (Rows: {len(df)}) ===")
+        print(df.tail(3))  # Show last 3 rows
+    else:
+        print(f"DataFrame is empty for {underlying}!")
     
-    # Get latest data
-    latest = processor.get_latest_data(underlying)
-    if latest:
-        print(f"Latest underlying LTP: {latest['underlying'][1]}")
-        print(f"Latest future LTP: {latest['future'][1]}")
+    # Print matrix data
+    processor.print_matrix(underlying)
 
 # Example usage in your loop
+iteration = 0
 while True:
+    iteration += 1
+    print(f"\n{'='*50}")
+    print(f"ITERATION {iteration}")
+    print(f"{'='*50}")
+    
     for underlying in ["RELIANCE", "HDFCBANK"]:
         sym = f"NSE:{underlying}-EQ"
         resp = get_option_chain(sym)
         process_underlying_data(underlying, resp)
     
-    time.sleep(1)  # Adjust frequency as needed
+    # Show overall DataFrame status
+    print(f"\n=== OVERALL STATUS ===")
+    total_rows = 0
+    for underlying in ["RELIANCE", "HDFCBANK"]:
+        df = processor.get_dataframe(underlying)
+        rows = len(df)
+        total_rows += rows
+        print(f"{underlying}: {rows} rows")
+    
+    print(f"Total rows across all underlyings: {total_rows}")
+    
+    time.sleep(2)  # Adjust frequency as needed
