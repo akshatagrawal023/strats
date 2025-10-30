@@ -48,26 +48,26 @@ class OptionDataProcessor:
         if underlying not in self.data:
             self.data[underlying] = {
                 'timestamps': [],
-                'matrix_data': []
+                'matrix_data': [],
+                'spot': [],          # underlying LTP series (per snapshot)
+                'future_pr': []      # future price series (per snapshot)
             }
         
         store = self.data[underlying]
         
-        # Create matrix for this timestamp
-        # Channels: 0 CE_BID, 1 CE_ASK, 2 PE_BID, 3 PE_ASK, 
+        # Create matrix for this timestamp (base channels only; spot/future kept separately)
+        # Channels: 0 CE_BID, 1 CE_ASK, 2 PE_BID, 3 PE_ASK,
         #           4 CE_VOL, 5 PE_VOL, 6 CE_OI, 7 PE_OI,
-        #           8 CE_OICH, 9 PE_OICH, 10 STRIKE, 11 UNDERLYING_LTP, 12 FUTURE_PRICE
-        mat = np.full((13, self.num_strikes), np.nan, dtype=float)
+        #           8 CE_OICH, 9 PE_OICH, 10 STRIKE
+        mat = np.full((11, self.num_strikes), np.nan, dtype=float)
         
-        # First row contains underlying and future data
+        # Extract and store underlying spot and future price (kept separately)
         if len(options) > 0:
             first_row = options[0]
-            underlying_ltp = first_row.get('ltp', 0)
-            future_price = first_row.get('fp', 0)  # Future price
-            
-            # Store underlying_ltp and future_price in all columns (same value across)
-            mat[11, :] = underlying_ltp  # Underlying LTP channel
-            mat[12, :] = future_price    # Future price channel
+            underlying_ltp = first_row.get('ltp', np.nan)
+            future_price = first_row.get('fp', np.nan)  # Future price
+            store['spot'].append(underlying_ltp)
+            store['future_pr'].append(future_price)
         
         # Process options in pairs (CE, PE) - skip first row
         si = 0  # Strike index (no dict needed!)
@@ -129,8 +129,20 @@ class OptionDataProcessor:
             timestamps = timestamps[-window:]
             matrices = matrices[-window:]
         
-        # Stack matrices into 3D array
-        matrix_array = np.stack(matrices, axis=0) if matrices else None
+        # Augment base matrices by broadcasting spot and future into extra channels
+        augmented = []
+        base_count = len(matrices)
+        for i in range(base_count):
+            base_mat = matrices[i]  # (11, strikes)
+            n_strikes = base_mat.shape[1]
+            spot_val = store['spot'][-(base_count - i)] if len(store['spot']) >= base_count else np.nan
+            fut_val = store['future_pr'][-(base_count - i)] if len(store['future_pr']) >= base_count else np.nan
+            spot_row = np.full((1, n_strikes), spot_val, dtype=float)
+            fut_row = np.full((1, n_strikes), fut_val, dtype=float)
+            aug_mat = np.vstack([base_mat, spot_row, fut_row])  # (13, strikes)
+            augmented.append(aug_mat)
+
+        matrix_array = np.stack(augmented, axis=0) if augmented else None
         return timestamps, matrix_array
     
     def print_matrix(self, underlying, show_full=False, channel_names=None):
