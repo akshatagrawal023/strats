@@ -5,9 +5,9 @@ Stores option chain data in a matrix format (channels x strikes) for efficient f
 Uses strike-count based indexing (moneyness) instead of absolute strikes for better generalization.
 
 Matrix Structure:
-- Shape: (11 channels, 2*strike_count+1 strikes)
-- Channels: CE_BID, CE_ASK, PE_BID, PE_ASK, CE_VOL, PE_VOL, CE_OI, PE_OICH, 
-            STRIKE, UNDERLYING_LTP, FUTURE_PRICE
+- Shape: (13 channels, 2*strike_count+1 strikes)
+- Channels: CE_BID, CE_ASK, PE_BID, PE_ASK, CE_VOL, PE_VOL, CE_OI, PE_OI,
+            CE_OICH, PE_OICH, STRIKE, UNDERLYING_LTP, FUTURE_PRICE
 - Stored as 3D array: (time_steps, channels, strikes)
 
 Key Features:
@@ -55,9 +55,9 @@ class OptionDataProcessor:
         
         # Create matrix for this timestamp
         # Channels: 0 CE_BID, 1 CE_ASK, 2 PE_BID, 3 PE_ASK, 
-        #           4 CE_VOL, 5 PE_VOL, 6 CE_OI, 7 PE_OICH,
-        #           8 STRIKE, 9 UNDERLYING_LTP, 10 FUTURE_PRICE
-        mat = np.full((11, self.num_strikes), np.nan, dtype=float)
+        #           4 CE_VOL, 5 PE_VOL, 6 CE_OI, 7 PE_OI,
+        #           8 CE_OICH, 9 PE_OICH, 10 STRIKE, 11 UNDERLYING_LTP, 12 FUTURE_PRICE
+        mat = np.full((13, self.num_strikes), np.nan, dtype=float)
         
         # First row contains underlying and future data
         if len(options) > 0:
@@ -66,8 +66,8 @@ class OptionDataProcessor:
             future_price = first_row.get('fp', 0)  # Future price
             
             # Store underlying_ltp and future_price in all columns (same value across)
-            mat[9, :] = underlying_ltp  # Underlying LTP channel
-            mat[10, :] = future_price    # Future price channel
+            mat[11, :] = underlying_ltp  # Underlying LTP channel
+            mat[12, :] = future_price    # Future price channel
         
         # Process options in pairs (CE, PE) - skip first row
         si = 0  # Strike index (no dict needed!)
@@ -83,19 +83,21 @@ class OptionDataProcessor:
                 continue
             
             # Store strike value
-            mat[8, si] = strike
+            mat[10, si] = strike
             
             # Store CE data
             mat[0, si] = ce_row.get('bid', np.nan)
             mat[1, si] = ce_row.get('ask', np.nan)
             mat[4, si] = ce_row.get('volume', np.nan)
             mat[6, si] = ce_row.get('oi', np.nan)
+            mat[8, si] = ce_row.get('oich', np.nan)
             
             # Store PE data
             mat[2, si] = pe_row.get('bid', np.nan)
             mat[3, si] = pe_row.get('ask', np.nan)
             mat[5, si] = pe_row.get('volume', np.nan)
-            mat[7, si] = pe_row.get('oich', np.nan)
+            mat[7, si] = pe_row.get('oi', np.nan)
+            mat[9, si] = pe_row.get('oich', np.nan)
             
             si += 1  # Next strike
         
@@ -115,7 +117,7 @@ class OptionDataProcessor:
         """
         if underlying not in self.data:
             return None, None
-        
+            
         store = self.data[underlying]
         if not store.get('timestamps') or not store.get('matrix_data'):
             return None, None
@@ -135,8 +137,8 @@ class OptionDataProcessor:
         """Print matrix data in readable format"""
         if channel_names is None:
             channel_names = ['CE_BID', 'CE_ASK', 'PE_BID', 'PE_ASK', 
-                           'CE_VOL', 'PE_VOL', 'CE_OI', 'PE_OICH', 
-                           'STRIKE', 'UNDERLYING_LTP', 'FUTURE_PRICE']
+                           'CE_VOL', 'PE_VOL', 'CE_OI', 'PE_OI',
+                           'CE_OICH', 'PE_OICH', 'STRIKE', 'UNDERLYING_LTP', 'FUTURE_PRICE']
         
         timestamps, matrix_array = self.get_matrix(underlying)
         if matrix_array is None:
@@ -167,9 +169,9 @@ class OptionDataProcessor:
             print(f"\n--- Sample (first 3 channels, first 5 strikes) ---")
             for ch_idx in range(min(3, len(channel_names))):
                 print(f"{channel_names[ch_idx]}: {latest_mat[ch_idx, :5]}")
-            print(f"\nSTRIKE: {latest_mat[8, :5]}")  # Show strikes
-            print(f"UNDERLYING_LTP: {latest_mat[9, :5]}")  # Show underlying LTP
-            print(f"FUTURE_PRICE: {latest_mat[10, :5]}")  # Show future price
+            print(f"\nSTRIKE: {latest_mat[10, :5]}")  # Show strikes
+            print(f"UNDERLYING_LTP: {latest_mat[11, :5]}")  # Show underlying LTP
+            print(f"FUTURE_PRICE: {latest_mat[12, :5]}")  # Show future price
     
     def save_to_hdf5(self, underlying, filepath):
         """Save matrix data to HDF5 for efficient storage and retrieval
