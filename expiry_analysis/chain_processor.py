@@ -46,11 +46,14 @@ class OptionDataProcessor:
         
         # Initialize if not exists
         if underlying not in self.data:
+            # Preallocated circular buffers per underlying
             self.data[underlying] = {
-                'timestamps': [],
-                'matrix_data': [],
-                'spot': [],          # underlying LTP series (per snapshot)
-                'future_pr': []      # future price series (per snapshot)
+                'timestamps': np.full(self.window_size, np.nan, dtype=float),
+                'matrix_data': np.full((self.window_size, 11, self.num_strikes), np.nan, dtype=float),
+                'spot': np.full(self.window_size, np.nan, dtype=float),
+                'future_pr': np.full(self.window_size, np.nan, dtype=float),
+                'write_idx': 0,
+                'count': 0
             }
         
         store = self.data[underlying]
@@ -61,13 +64,13 @@ class OptionDataProcessor:
         #           8 CE_OICH, 9 PE_OICH, 10 STRIKE
         mat = np.full((11, self.num_strikes), np.nan, dtype=float)
         
-        # Extract and store underlying spot and future price (kept separately)
+        # Extract underlying spot and future price (kept separately)
+        underlying_ltp = np.nan
+        future_price = np.nan
         if len(options) > 0:
             first_row = options[0]
             underlying_ltp = first_row.get('ltp', np.nan)
             future_price = first_row.get('fp', np.nan)  # Future price
-            store['spot'].append(underlying_ltp)
-            store['future_pr'].append(future_price)
         
         # Process options in pairs (CE, PE) - skip first row
         si = 0  # Strike index (no dict needed!)
@@ -101,14 +104,15 @@ class OptionDataProcessor:
             
             si += 1  # Next strike
         
-        # Store matrix with timestamp
-        store['timestamps'].append(ts)
-        store['matrix_data'].append(mat)
-        
-        # Keep only last window_size snapshots
-        if len(store['timestamps']) > self.window_size:
-            store['timestamps'] = store['timestamps'][-self.window_size:]
-            store['matrix_data'] = store['matrix_data'][-self.window_size:]
+        # Write into circular buffers
+        i = store['write_idx']
+        store['matrix_data'][i] = mat
+        store['timestamps'][i] = ts
+        store['spot'][i] = underlying_ltp
+        store['future_pr'][i] = future_price
+        store['write_idx'] = (i + 1) % self.window_size
+        if store['count'] < self.window_size:
+            store['count'] += 1
     
     def get_matrix(self, underlying, window=None):
         """Get matrix data for underlying with timestamps
@@ -119,31 +123,39 @@ class OptionDataProcessor:
             return None, None
             
         store = self.data[underlying]
-        if not store.get('timestamps') or not store.get('matrix_data'):
+        if store['count'] == 0:
             return None, None
         
-        timestamps = store['timestamps']
-        matrices = store['matrix_data']
+        total = store['count']
+        widx = store['write_idx']
+        start = (widx - total) % self.window_size
+        end = widx
         
-        if window:
-            timestamps = timestamps[-window:]
-            matrices = matrices[-window:]
+        if start < end:
+            base_mats = store['matrix_data'][start:end]  # (total, 11, strikes)
+            ts_arr = store['timestamps'][start:end]
+            spot_arr = store['spot'][start:end]
+            fut_arr = store['future_pr'][start:end]
+        else:
+            base_mats = np.concatenate((store['matrix_data'][start:], store['matrix_data'][:end]), axis=0)
+            ts_arr = np.concatenate((store['timestamps'][start:], store['timestamps'][:end]), axis=0)
+            spot_arr = np.concatenate((store['spot'][start:], store['spot'][:end]), axis=0)
+            fut_arr = np.concatenate((store['future_pr'][start:], store['future_pr'][:end]), axis=0)
         
-        # Augment base matrices by broadcasting spot and future into extra channels
-        augmented = []
-        base_count = len(matrices)
-        for i in range(base_count):
-            base_mat = matrices[i]  # (11, strikes)
-            n_strikes = base_mat.shape[1]
-            spot_val = store['spot'][-(base_count - i)] if len(store['spot']) >= base_count else np.nan
-            fut_val = store['future_pr'][-(base_count - i)] if len(store['future_pr']) >= base_count else np.nan
-            spot_row = np.full((1, n_strikes), spot_val, dtype=float)
-            fut_row = np.full((1, n_strikes), fut_val, dtype=float)
-            aug_mat = np.vstack([base_mat, spot_row, fut_row])  # (13, strikes)
-            augmented.append(aug_mat)
-
-        matrix_array = np.stack(augmented, axis=0) if augmented else None
-        return timestamps, matrix_array
+        if window and window < total:
+            base_mats = base_mats[-window:]
+            ts_arr = ts_arr[-window:]
+            spot_arr = spot_arr[-window:]
+            fut_arr = fut_arr[-window:]
+            total = window
+        
+        # Broadcast spot and future into added channels
+        n_strikes = base_mats.shape[2]
+        spot_rows = np.repeat(spot_arr.reshape(total, 1, 1), n_strikes, axis=2)
+        fut_rows = np.repeat(fut_arr.reshape(total, 1, 1), n_strikes, axis=2)
+        augmented = np.concatenate((base_mats, spot_rows, fut_rows), axis=1)  # (total, 13, strikes)
+        
+        return ts_arr.tolist(), augmented
     
     def print_matrix(self, underlying, show_full=False, channel_names=None):
         """Print matrix data in readable format"""
