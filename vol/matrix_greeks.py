@@ -285,6 +285,69 @@ class MatrixGreeksCalculator:
         
         return extended_matrix
     
+    def get_greeks_only(self, matrix: np.ndarray,
+                       days_to_expiry: Optional[int] = None) -> np.ndarray:
+        """
+        Return ONLY Greeks matrix (10 channels) - doesn't append to input.
+        
+        Args:
+            matrix: Input matrix (13 channels × n_strikes)
+            days_to_expiry: Override days to expiry (optional)
+        
+        Returns:
+            Greeks matrix (10 channels × n_strikes):
+            [CE_IV, PE_IV, CE_DELTA, PE_DELTA, CE_GAMMA, PE_GAMMA,
+             CE_THETA, PE_THETA, CE_VEGA, PE_VEGA]
+        """
+        if matrix.shape[0] != 13:
+            raise ValueError(f"Expected 13 channels, got {matrix.shape[0]}")
+        
+        n_strikes = matrix.shape[1]
+        T = (days_to_expiry or int(self.time_to_expiry * 365)) / 365.0
+        
+        # Extract channels
+        ce_bid = matrix[0, :]
+        ce_ask = matrix[1, :]
+        pe_bid = matrix[2, :]
+        pe_ask = matrix[3, :]
+        strikes = matrix[10, :]
+        underlying_ltp = matrix[11, :]
+        
+        # Calculate mid prices
+        ce_mid = (ce_bid + ce_ask) / 2.0
+        pe_mid = (pe_bid + pe_ask) / 2.0
+        
+        # Prepare arrays
+        S = underlying_ltp
+        K = strikes
+        
+        # Calculate IV
+        is_call_ce = np.ones(n_strikes, dtype=np.bool_)
+        is_call_pe = np.zeros(n_strikes, dtype=np.bool_)
+        
+        ce_iv = calculate_iv_vectorized(ce_mid, S, K, T, self.risk_free_rate, is_call_ce)
+        pe_iv = calculate_iv_vectorized(pe_mid, S, K, T, self.risk_free_rate, is_call_pe)
+        
+        # Calculate Greeks
+        ce_delta, ce_gamma, ce_theta, ce_vega = calculate_greeks_vectorized(
+            S, K, T, self.risk_free_rate, ce_iv, is_call_ce
+        )
+        
+        pe_delta, pe_gamma, pe_theta, pe_vega = calculate_greeks_vectorized(
+            S, K, T, self.risk_free_rate, pe_iv, is_call_pe
+        )
+        
+        # Stack into 10-channel Greeks matrix
+        greeks_matrix = np.stack([
+            ce_iv, pe_iv,
+            ce_delta, pe_delta,
+            ce_gamma, pe_gamma,
+            ce_theta, pe_theta,
+            ce_vega, pe_vega
+        ], axis=0)
+        
+        return greeks_matrix  # Shape: (10, n_strikes)
+    
     def calculate_portfolio_greeks(self, matrix: np.ndarray, 
                                    ce_positions: Optional[np.ndarray] = None,
                                    pe_positions: Optional[np.ndarray] = None) -> dict:

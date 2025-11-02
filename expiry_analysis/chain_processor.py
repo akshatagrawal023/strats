@@ -33,6 +33,7 @@ class OptionDataProcessor:
         self.strike_count = strike_count  # n in get_option_chain(sym, n) -> 2n+1 strikes
         self.num_strikes = 2 * strike_count + 1
         self.data = {}  # underlying -> structured data
+        self.on_snapshot = None  # optional callback(underlying, ts, base_mat, spot, future, raw_resp)
     
     def process_option_chain(self, underlying, resp):
         """Process option chain response and store data"""
@@ -42,6 +43,7 @@ class OptionDataProcessor:
             
         data = resp['data']
         options = data.get('optionsChain', [])
+        print( "options", options)
         ts = time.time()
         
         # Initialize if not exists
@@ -59,9 +61,8 @@ class OptionDataProcessor:
         store = self.data[underlying]
         
         # Create matrix for this timestamp (base channels only; spot/future kept separately)
-        # Channels: 0 CE_BID, 1 CE_ASK, 2 PE_BID, 3 PE_ASK,
-        #           4 CE_VOL, 5 PE_VOL, 6 CE_OI, 7 PE_OI,
-        #           8 CE_OICH, 9 PE_OICH, 10 STRIKE
+        # Channels: 0 CE_BID, 1 CE_ASK, 2 PE_BID, 3 PE_ASK,4 CE_VOL, 5 PE_VOL, 6 CE_OI, 
+        # 7 PE_OI, 8 CE_OICH, 9 PE_OICH, 10 STRIKE
         mat = np.full((11, self.num_strikes), np.nan, dtype=float)
         
         # Extract underlying spot and future price (kept separately)
@@ -78,8 +79,18 @@ class OptionDataProcessor:
             if i + 1 >= len(options) or si >= self.num_strikes:
                 break
             
-            ce_row = options[i]      # Call
-            pe_row = options[i + 1]  # Put
+            a = options[i]
+            b = options[i + 1]
+            at = a.get('option_type')
+            bt = b.get('option_type')
+            
+            # Ensure we have one CE and one PE; skip otherwise
+            if at == 'CE' and bt == 'PE':
+                ce_row, pe_row = a, b
+            elif at == 'PE' and bt == 'CE':
+                ce_row, pe_row = b, a
+            else:
+                continue
             
             strike = ce_row.get('strike_price')
             if strike is None:
@@ -113,6 +124,13 @@ class OptionDataProcessor:
         store['write_idx'] = (i + 1) % self.window_size
         if store['count'] < self.window_size:
             store['count'] += 1
+
+        # Non-blocking dispatch to sinks (DB writer / feature worker)
+        if callable(self.on_snapshot):
+            try:
+                self.on_snapshot(underlying, ts, mat, underlying_ltp, future_price, resp)
+            except Exception:
+                pass
     
     def get_matrix(self, underlying, window=None):
         """Get matrix data for underlying with timestamps
@@ -168,7 +186,7 @@ class OptionDataProcessor:
         if matrix_array is None:
             print(f"No matrix data for {underlying}")
             return
-        
+            
         store = self.data[underlying]
         num_timestamps = len(timestamps)
         
