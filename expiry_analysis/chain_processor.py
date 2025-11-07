@@ -43,7 +43,6 @@ class OptionDataProcessor:
             
         data = resp['data']
         options = data.get('optionsChain', [])
-        print( "options", options)
         ts = time.time()
         
         # Initialize if not exists
@@ -131,6 +130,23 @@ class OptionDataProcessor:
                 self.on_snapshot(underlying, ts, mat, underlying_ltp, future_price, resp)
             except Exception:
                 pass
+    
+    def process_and_get_latest(self, underlying, resp):
+        """
+        Process option chain and return latest matrix in one call.
+        
+        Args:
+            underlying: Underlying symbol
+            resp: API response dict
+        
+        Returns:
+            Latest matrix (13 channels × strikes) or None if invalid
+        """
+        self.process_option_chain(underlying, resp)
+        ts, matrices = self.get_matrix(underlying, window=1)
+        if matrices is None or len(matrices) == 0:
+            return None
+        return matrices[-1]  # Shape: (13, strikes)
     
     def get_matrix(self, underlying, window=None):
         """Get matrix data for underlying with timestamps
@@ -236,34 +252,34 @@ class OptionDataProcessor:
         
         print(f"Saved {underlying} data to {filepath}")
 
-# Usage example
-processor = OptionDataProcessor(window_size=300, feature_window=20, strike_count=3)
+# Usage example (only runs if file is executed directly)
+if __name__ == "__main__":
+    processor = OptionDataProcessor(window_size=300, feature_window=20, strike_count=3)
 
+    # Process option chain data
+    def process_underlying_data(underlying, resp):
+        processor.process_option_chain(underlying, resp)
+        processor.print_matrix(underlying)
 
-# Process option chain data
-def process_underlying_data(underlying, resp):
-    processor.process_option_chain(underlying, resp)
-    processor.print_matrix(underlying)
-
-# Example usage in your loop
-iteration = 0
-while True:
-    iteration += 1
-    print(f"\n{'='*50}")
-    print(f"ITERATION {iteration}")
-    print(f"{'='*50}")
-    
-    for underlying in ["RELIANCE", "HDFCBANK"]:
-        sym = f"NSE:{underlying}-EQ"
-        resp = get_option_chain(sym, 3)
-        process_underlying_data(underlying, resp)
-    
-    # Show overall status with matrix info
-    print(f"\n=== OVERALL STATUS ===")
-    for underlying in ["RELIANCE", "HDFCBANK"]:
-        if underlying in processor.data:
-            store = processor.data[underlying]
-            num_snapshots = len(store.get('timestamps', []))
-            print(f"{underlying}: {num_snapshots}/{processor.window_size} snapshots")
-    
-    time.sleep(2)  # Adjust frequency as needed
+    # Example usage in your loop
+    iteration = 0
+    while True:
+        iteration += 1
+        print(f"\n{'='*50}")
+        print(f"ITERATION {iteration}")
+        print(f"{'='*50}")
+        
+        for underlying in ["RELIANCE", "HDFCBANK"]:
+            sym = f"NSE:{underlying}-EQ"
+            resp = get_option_chain(sym, 3)
+            process_underlying_data(underlying, resp)
+        
+        # Show overall status with matrix info
+        print(f"\n=== OVERALL STATUS ===")
+        for underlying in ["RELIANCE", "HDFCBANK"]:
+            if underlying in processor.data:
+                store = processor.data[underlying]
+                num_snapshots = len(store.get('timestamps', []))
+                print(f"{underlying}: {num_snapshots}/{processor.window_size} snapshots")
+        
+        time.sleep(2)  # Adjust frequency as needed
