@@ -14,9 +14,7 @@ from utils.fyers_instance import FyersInstance
 
 class DataFetcher:
     def __init__(self, backtest_data_file: str = "nifty50_backtest_data.json"):
-        self.logger = logging.getLogger("CalendarSpreadDataFetcher")
-        
-        # Load backtest data
+        self.logger = logging.getLogger("DataFetcher")
         self.backtest_data = self.load_backtest_data()
         
         # Initialize Fyers instance
@@ -251,7 +249,7 @@ def main():
         )
         
         # Create fetcher
-        fetcher = CalendarSpreadDataFetcher()
+        fetcher = DataFetcher()
         
         if not fetcher.backtest_data:
             print("❌ No backtest data found. Run nifty50_processor.py first.")

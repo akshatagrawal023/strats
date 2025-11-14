@@ -1,7 +1,6 @@
 # Option Chain Features for Direction Prediction
 
 ## Why CE_OI and PE_OI (Fixed)
-Previously stored CE_OI and PE_OICH inconsistently. Now stores **both OI and OICH** for both CE and PE:
 - **OI (Open Interest)**: Total outstanding contracts
 - **OICH (OI Change)**: Intraday change in OI
 
