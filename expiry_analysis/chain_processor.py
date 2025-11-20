@@ -35,45 +35,33 @@ class OptionDataProcessor:
         self.data = {}  # underlying -> structured data
         self.on_snapshot = None  # optional callback(underlying, ts, base_mat, spot, future, raw_resp)
     
-    def process_option_chain(self, underlying, resp):
-        """Process option chain response and store data"""
+    def create_matrix_from_response(self, resp):
+        """
+        Create a single matrix from option chain response (no windowing).
+        Returns: (matrix, underlying_ltp, future_price) or (None, None, None) if invalid.
+        Matrix shape: (11, num_strikes)
+        """
         if not resp or resp.get('s') != 'ok':
-            print(f"Invalid response for {underlying}")
-            return
+            return None, None, None
             
         data = resp['data']
         options = data.get('optionsChain', [])
-        ts = time.time()
         
-        # Initialize if not exists
-        if underlying not in self.data:
-            # Preallocated circular buffers per underlying
-            self.data[underlying] = {
-                'timestamps': np.full(self.window_size, np.nan, dtype=float),
-                'matrix_data': np.full((self.window_size, 11, self.num_strikes), np.nan, dtype=float),
-                'spot': np.full(self.window_size, np.nan, dtype=float),
-                'future_pr': np.full(self.window_size, np.nan, dtype=float),
-                'write_idx': 0,
-                'count': 0
-            }
-        
-        store = self.data[underlying]
-        
-        # Create matrix for this timestamp (base channels only; spot/future kept separately)
-        # Channels: 0 CE_BID, 1 CE_ASK, 2 PE_BID, 3 PE_ASK,4 CE_VOL, 5 PE_VOL, 6 CE_OI, 
-        # 7 PE_OI, 8 CE_OICH, 9 PE_OICH, 10 STRIKE
+        # Create matrix (base channels only; spot/future kept separately)
+        # Channels: 0 CE_BID, 1 CE_ASK, 2 PE_BID, 3 PE_ASK, 4 CE_VOL, 5 PE_VOL, 
+        # 6 CE_OI, 7 PE_OI, 8 CE_OICH, 9 PE_OICH, 10 STRIKE
         mat = np.full((11, self.num_strikes), np.nan, dtype=float)
         
-        # Extract underlying spot and future price (kept separately)
+        # Extract underlying spot and future price
         underlying_ltp = np.nan
         future_price = np.nan
         if len(options) > 0:
             first_row = options[0]
             underlying_ltp = first_row.get('ltp', np.nan)
-            future_price = first_row.get('fp', np.nan)  # Future price
+            future_price = first_row.get('fp', np.nan)
         
         # Process options in pairs (CE, PE) - skip first row
-        si = 0  # Strike index (no dict needed!)
+        si = 0
         for i in range(1, len(options), 2):
             if i + 1 >= len(options) or si >= self.num_strikes:
                 break
@@ -83,7 +71,6 @@ class OptionDataProcessor:
             at = a.get('option_type')
             bt = b.get('option_type')
             
-            # Ensure we have one CE and one PE; skip otherwise
             if at == 'CE' and bt == 'PE':
                 ce_row, pe_row = a, b
             elif at == 'PE' and bt == 'CE':
@@ -95,24 +82,42 @@ class OptionDataProcessor:
             if strike is None:
                 continue
             
-            # Store strike value
             mat[10, si] = strike
-            
-            # Store CE data
             mat[0, si] = ce_row.get('bid', np.nan)
             mat[1, si] = ce_row.get('ask', np.nan)
             mat[4, si] = ce_row.get('volume', np.nan)
             mat[6, si] = ce_row.get('oi', np.nan)
             mat[8, si] = ce_row.get('oich', np.nan)
-            
-            # Store PE data
             mat[2, si] = pe_row.get('bid', np.nan)
             mat[3, si] = pe_row.get('ask', np.nan)
             mat[5, si] = pe_row.get('volume', np.nan)
             mat[7, si] = pe_row.get('oi', np.nan)
             mat[9, si] = pe_row.get('oich', np.nan)
-            
-            si += 1  # Next strike
+            si += 1
+        
+        return mat, underlying_ltp, future_price
+    
+    def process_option_chain(self, underlying, resp):
+        """Process option chain response and store in window buffer"""
+        mat, underlying_ltp, future_price = self.create_matrix_from_response(resp)
+        if mat is None:
+            print(f"Invalid response for {underlying}")
+            return
+        
+        ts = time.time()
+        
+        # Initialize if not exists
+        if underlying not in self.data:
+            self.data[underlying] = {
+                'timestamps': np.full(self.window_size, np.nan, dtype=float),
+                'matrix_data': np.full((self.window_size, 11, self.num_strikes), np.nan, dtype=float),
+                'spot': np.full(self.window_size, np.nan, dtype=float),
+                'future_pr': np.full(self.window_size, np.nan, dtype=float),
+                'write_idx': 0,
+                'count': 0
+            }
+        
+        store = self.data[underlying]
         
         # Write into circular buffers
         i = store['write_idx']
@@ -124,7 +129,7 @@ class OptionDataProcessor:
         if store['count'] < self.window_size:
             store['count'] += 1
 
-        # Non-blocking dispatch to sinks (DB writer / feature worker)
+        # Non-blocking dispatch to sinks
         if callable(self.on_snapshot):
             try:
                 self.on_snapshot(underlying, ts, mat, underlying_ltp, future_price, resp)
