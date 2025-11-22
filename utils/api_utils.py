@@ -157,13 +157,22 @@ def get_positions():
     fyers = FyersInstance.get_instance()
     return fyers_rate_limited_api_call(fyers.positions)
 
-def get_option_chain(symbol, strikecount=1):
+def get_option_chain(symbol, strikecount=1, fyers=None):
+    """
+    Get option chain data.
+    
+    Args:
+        symbol: Symbol string (e.g., "NSE:RELIANCE-EQ")
+        strikecount: Number of strikes
+        fyers: Optional FyersInstance (if None, will get singleton)
+    """
     data = {
     "symbol":symbol,
     "strikecount":strikecount,
     "timestamp": ""
     }
-    fyers = FyersInstance.get_instance()
+    if fyers is None:
+        fyers = FyersInstance.get_instance()
     response = fyers_rate_limited_api_call(fyers.optionchain, data=data)
     return response
 
