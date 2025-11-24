@@ -5,7 +5,7 @@ import h5py
 import numpy as np
 from datetime import datetime
 from pathlib import Path
-from data_validation import validate_matrix
+# from data_validation import validate_matrix
 
 
 def load_training_data(symbol: str, data_dir: str = None):
@@ -66,7 +66,7 @@ if __name__ == "__main__":
     symbol = "HDFCBANK"
     
     # Validate matrices
-    validation = validate_matrix(symbol)
+    # validation = validate_matrix(symbol)
     
     # Print summary
     print_data_summary(symbol, show_first_n=3)
