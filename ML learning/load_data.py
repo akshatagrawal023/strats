@@ -20,10 +20,12 @@ def load_training_data(symbol: str, data_dir: str = None):
         dict with keys: 'features', 'greeks', 'timestamps'
     """
     if data_dir is None:
-        # Use directory where this script is located
-        data_dir = Path(__file__).parent
+        # Go one folder back from ML learning to training_data
+        data_dir = Path(__file__).parent.parent / "training_data"
+    else:
+        data_dir = Path(data_dir)
     
-    filepath = Path(data_dir) / f"{symbol}_training.h5"
+    filepath = data_dir / f"{symbol}_training.h5"
     
     if not filepath.exists():
         raise FileNotFoundError(f"File not found: {filepath}")
@@ -68,6 +70,6 @@ if __name__ == "__main__":
     # Validate matrices
     # validation = validate_matrix(symbol)
     
-    # Print summary
+    # Print summary (defaults to ../training_data from script location)
     print_data_summary(symbol, show_first_n=3)
 
