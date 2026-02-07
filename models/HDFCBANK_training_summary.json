@@ -3,32 +3,32 @@
   "window_size": 100,
   "prediction_horizon": 10,
   "move_threshold": 0.001,
-  "train_samples": 217,
-  "val_samples": 55,
+  "train_samples": 1195,
+  "val_samples": 299,
   "histories": {
     "hybrid": {
-      "best_val_acc": 72.72727272727273,
-      "best_epoch": 1,
-      "final_train_acc": 100.0,
-      "final_val_acc": 69.0909090909091
+      "best_val_acc": 62.876254180602004,
+      "best_epoch": 10,
+      "final_train_acc": 93.89121338912133,
+      "final_val_acc": 42.80936454849498
     },
     "3dcnn": {
-      "best_val_acc": 83.63636363636364,
-      "best_epoch": 7,
-      "final_train_acc": 64.51612903225806,
-      "final_val_acc": 47.27272727272727
+      "best_val_acc": 55.51839464882943,
+      "best_epoch": 10,
+      "final_train_acc": 66.19246861924687,
+      "final_val_acc": 50.50167224080268
     },
     "lstm": {
-      "best_val_acc": 76.36363636363636,
+      "best_val_acc": 57.19063545150502,
       "best_epoch": 2,
-      "final_train_acc": 100.0,
-      "final_val_acc": 69.0909090909091
+      "final_train_acc": 90.2928870292887,
+      "final_val_acc": 45.1505016722408
     },
     "transformer": {
-      "best_val_acc": 85.45454545454545,
-      "best_epoch": 1,
-      "final_train_acc": 100.0,
-      "final_val_acc": 43.63636363636363
+      "best_val_acc": 62.207357859531776,
+      "best_epoch": 3,
+      "final_train_acc": 88.20083682008368,
+      "final_val_acc": 54.51505016722408
     }
   }
 }

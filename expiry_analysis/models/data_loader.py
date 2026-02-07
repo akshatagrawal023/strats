@@ -13,7 +13,7 @@ import os
 sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
 from expiry_analysis.chain_processor import OptionDataProcessor
-from vol.matrix_greeks import MatrixGreeksCalculator
+from greeks.matrix_greeks import MatrixGreeksCalculator
 from expiry_analysis.models.feature_engineering import add_derived_features, normalize_matrix
 
 

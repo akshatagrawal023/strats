@@ -13,7 +13,7 @@ import numpy as np
 import pandas as pd
 from typing import Tuple, Optional, Dict
 
-from vol.matrix_greeks import MatrixGreeksCalculator
+from greeks.matrix_greeks import MatrixGreeksCalculator
 
 
 class FeatureGenerator:
@@ -58,7 +58,7 @@ class FeatureGenerator:
             'CE_OICH', 'PE_OICH',         # 8-9
             'UNDERLYING_LTP'              # 11
         ]
-        from vol.matrix_greeks import CHANNEL_NAMES
+        from greeks.matrix_greeks import CHANNEL_NAMES
         ch_names = CHANNEL_NAMES
         
         ts, ext = self.get_extended_matrix(underlying, window)
@@ -129,7 +129,7 @@ class FeatureGenerator:
         if ext is None:
             return None
 
-        from vol.matrix_greeks import CHANNEL_NAMES as N
+        from greeks.matrix_greeks import CHANNEL_NAMES as N
         def ch(name):
             return ext[:, N.index(name), :]
 

@@ -14,7 +14,7 @@ from typing import List
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from expiry_analysis.chain_processor import OptionDataProcessor
-from vol.matrix_greeks import MatrixGreeksCalculator
+from greeks.matrix_greeks import MatrixGreeksCalculator
 from utils.api_utils import get_option_chain
 from expiry_analysis.config import (
     UNDERLYINGS, STRIKE_COUNT, POLL_INTERVAL,
@@ -75,7 +75,7 @@ def print_matrix(matrix: np.ndarray):
     Args:
         matrix: Combined matrix (23 channels × strikes)
     """
-    from vol.matrix_greeks import CHANNEL_NAMES
+    from greeks.matrix_greeks import CHANNEL_NAMES
     
     n_strikes = matrix.shape[1]
     strikes = matrix[10, :]  # STRIKE channel

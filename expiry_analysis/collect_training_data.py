@@ -17,7 +17,7 @@ import json
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from expiry_analysis.chain_processor import OptionDataProcessor
-from vol.matrix_greeks import MatrixGreeksCalculator
+from greeks.matrix_greeks import MatrixGreeksCalculator
 from utils.api_utils import get_option_chain
 from expiry_analysis.config import (
     UNDERLYINGS, STRIKE_COUNT, POLL_INTERVAL,

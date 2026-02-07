@@ -4,7 +4,7 @@ import time
 from typing import Optional, Callable
 import numpy as np
 from expiry_analysis.stream_store import StreamStore
-from vol.matrix_greeks import MatrixGreeksCalculator
+from greeks.matrix_greeks import MatrixGreeksCalculator
 
 class AsyncSinks:
     """

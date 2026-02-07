@@ -15,7 +15,7 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(
 from expiry_analysis.models.cnn_rnn_model import create_model
 from expiry_analysis.models.data_loader import create_dataloader
 from expiry_analysis.chain_processor import OptionDataProcessor
-from vol.matrix_greeks import MatrixGreeksCalculator
+from greeks.matrix_greeks import MatrixGreeksCalculator
 from expiry_analysis.config import (
     WINDOW_SIZE, STRIKE_COUNT, RISK_FREE_RATE, DAYS_TO_EXPIRY
 )
