@@ -69,13 +69,90 @@ def calculate_iv_vectorized(prices: np.ndarray, S: np.ndarray, K: np.ndarray,
     
     return ivs
 
+@jit(nopython=True, fastmath=True, parallel=True)
+def calculate_greeks_vectorized(S: np.ndarray, K: np.ndarray, T: float, 
+                               r: float, sigma: np.ndarray, 
+                               is_call: bool) -> Tuple[np.ndarray, np.ndarray, 
+                                                              np.ndarray, np.ndarray]:
+    """Vectorized Black-Scholes Greeks calculation"""
+    n = len(S)
+    deltas = np.empty(n, dtype=np.float64)
+    gammas = np.empty(n, dtype=np.float64)
+    thetas = np.empty(n, dtype=np.float64)
+    vegas = np.empty(n, dtype=np.float64)
+    
+    # Use max to avoid issues with very small T
+    T_safe = max(T, 1e-6)
+    sqrt_T = math.sqrt(T_safe)
+    inv_sqrt_T = 1.0 / sqrt_T 
+
+    # Precompute exp(-rT) - same for all options
+    exp_neg_rT = math.exp(-r * T_safe)
+    
+    for i in prange(n):
+        # Skip if invalid inputs
+        if np.isnan(sigma[i]) or sigma[i] <= 0 or S[i] <= 0 or K[i] <= 0:
+            deltas[i] = np.nan
+            gammas[i] = np.nan
+            thetas[i] = np.nan
+            vegas[i] = np.nan
+            continue
+        
+        S_over_K = S[i] / K[i]
+        log_S_over_K = math.log(S_over_K)
+        half_sigma2 = 0.5 * sigma[i] * sigma[i]
+
+        d1 = (log_S_over_K + (r + half_sigma2) * T_safe) / (sigma[i] * sqrt_T)
+        d2 = d1 - sigma[i] * sqrt_T
+
+        pdf_d1 = norm_pdf_numba(d1)
+        cdf_d1 = norm_cdf_numba(d1)
+        cdf_d2 = norm_cdf_numba(d2)
+        cdf_neg_d2 = 1.0 - cdf_d2
+        
+        if is_call:
+            deltas[i] = cdf_d1
+        else:
+            deltas[i] = cdf_d1 - 1.0
+        
+        gammas[i] = pdf_d1 * inv_sqrt_T / (S[i] * sigma[i])
+        vegas[i] = S[i] * pdf_d1 * sqrt_T / 100.0
+        
+        first_term = -S[i] * sigma[i] * pdf_d1 * 0.5 * inv_sqrt_T 
+
+        if is_call:
+            thetas[i] = (first_term - r * K[i] * exp_neg_rT * cdf_d2) / 365.0
+        else:
+            thetas[i] = (first_term + r * K[i] * exp_neg_rT * cdf_neg_d2) / 365.0
+    
+    return deltas, gammas, thetas, vegas
+
+def calculate_greeks_scalar(S: float, K: float, T: float, r: float, 
+                           sigma: float, is_call: bool) -> Tuple[float, float, float, float]:
+    """
+    Calculate Greeks for a single option (scalar inputs, scalar outputs).
+    Wraps your existing vectorized function.
+    """
+    # Convert to 1-element arrays
+    S_arr = np.array([S], dtype=np.float64)
+    K_arr = np.array([K], dtype=np.float64)
+    sigma_arr = np.array([sigma], dtype=np.float64)
+    
+    # Use your vectorized function
+    delta_arr, gamma_arr, theta_arr, vega_arr = calculate_greeks_vectorized(
+        S_arr, K_arr, T, r, sigma_arr, is_call
+    )
+    
+    # Return scalars
+    return delta_arr[0], gamma_arr[0], theta_arr[0], vega_arr[0]
+
 class MatrixGreeksCalculator:
    
     def __init__(self, risk_free_rate: float = 0.065, days_to_expiry: int = 7):
         self.risk_free_rate = risk_free_rate
         self.time_to_expiry = days_to_expiry / 365.0
     
-    def get_greeks(self, matrix: np.ndarray, 
+    def get_greeks(self, is_call: bool, matrix: np.ndarray, 
                             days_to_expiry: Optional[int] = None) -> np.ndarray:
 
         if matrix.shape[0] != 13:
@@ -85,53 +162,26 @@ class MatrixGreeksCalculator:
         T = (days_to_expiry or int(self.time_to_expiry * 365)) / 365.0
         
         # Extract channels
-        ce_bid = matrix[0, :]
-        ce_ask = matrix[1, :]
-        pe_bid = matrix[2, :]
-        pe_ask = matrix[3, :]
+        if is_call:
+            bid = matrix[0, :]
+            ask = matrix[1, :]
+        else:
+            bid = matrix[2, :]
+            ask = matrix[3, :]
+
+        # Calculate mid prices
+        mid = (bid + ask) / 2.0
+
         K = matrix[10, :] #strikes
         S = matrix[11, :]  # underlying_ltp, Same value across all strikes
         
-        # Calculate mid prices
-        ce_mid = (ce_bid + ce_ask) / 2.0
-        pe_mid = (pe_bid + pe_ask) / 2.0
-        
-        # Calculate IV for calls and puts
-        is_call_ce = np.ones(n_strikes, dtype=np.bool_)
-        is_call_pe = np.zeros(n_strikes, dtype=np.bool_)
-        
-        ce_iv = calculate_iv_vectorized(ce_mid, S, K, T, self.risk_free_rate, is_call_ce)
-        pe_iv = calculate_iv_vectorized(pe_mid, S, K, T, self.risk_free_rate, is_call_pe)
-        
-        # Calculate Greeks for calls
-        ce_delta, ce_gamma, ce_theta, ce_vega = calculate_greeks_vectorized(
-            S, K, T, self.risk_free_rate, ce_iv, is_call_ce
+        iv = calculate_iv_vectorized(mid, S, K, T, self.risk_free_rate, is_call)
+
+        delta, gamma, theta, vega = calculate_greeks_vectorized(
+            S, K, T, self.risk_free_rate, iv, is_call
         )
         
-        # Calculate Greeks for puts
-        pe_delta, pe_gamma, pe_theta, pe_vega = calculate_greeks_vectorized(
-            S, K, T, self.risk_free_rate, pe_iv, is_call_pe
-        )
-        
-        # Create extended matrix (23 channels)
-        extended_matrix = np.full((23, n_strikes), np.nan, dtype=np.float64)
-        extended_matrix[:13, :] = matrix  # Copy original channels
-        
-        # Add IV channels
-        extended_matrix[13, :] = ce_iv
-        extended_matrix[14, :] = pe_iv
-        
-        # Add Greeks channels
-        extended_matrix[15, :] = ce_delta
-        extended_matrix[16, :] = pe_delta
-        extended_matrix[17, :] = ce_gamma
-        extended_matrix[18, :] = pe_gamma
-        extended_matrix[19, :] = ce_theta
-        extended_matrix[20, :] = pe_theta
-        extended_matrix[21, :] = ce_vega
-        extended_matrix[22, :] = pe_vega
-        
-        return extended_matrix
+        return iv, delta, gamma, theta, vega
     
     def get_greeks_only(self, matrix: np.ndarray,
                        days_to_expiry: Optional[int] = None) -> np.ndarray:
