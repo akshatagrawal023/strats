@@ -19,8 +19,25 @@ def time_to_expiry_years(expiry_date: date, reference_date: Optional[date] = Non
 
 class GreeksProcessor:
    
-    def __init__(self, risk_free_rate: float = 0.065, days_to_expiry: int = 7):
+    def __init__(self, risk_free_rate: float = 0.065):
         self.risk_free_rate = risk_free_rate
+
+    def get_matrix_greeks(self, is_call: bool, matrix: np.ndarray, expiry_date: str,
+                            ) -> np.ndarray:
+        
+        greeks = self.get_greeks_from_matrix(is_call, matrix, expiry_date)
+
+        greeks_matrix = np.full((7, n_strikes), np.nan, dtype=np.float64)
+        
+        greeks_matrix[0, :] = greeks.iv
+        greeks_matrix[1, :] = greeks.delta
+        greeks_matrix[2, :] = greeks.gamma
+        greeks_matrix[3, :] = greeks.theta
+        greeks_matrix[4, :] = greeks.vega
+        greeks_matrix[5, :] = greeks.vanna
+        greeks_matrix[6, :] = greeks.volga
+        
+        return greeks_matrix
     
     def get_greeks_from_matrix(self, is_call: bool, matrix: np.ndarray, expiry_date: str,
                             ) -> np.ndarray:
@@ -51,21 +68,21 @@ class GreeksProcessor:
 
         iv = calculate_iv_vectorized(mid_arr, S_arr, K_arr, T, r, is_call)
         
-        delta, gamma, theta, vega = calculate_greeks_vectorized(
+        delta, gamma, theta, vega, vanna, volga = calculate_greeks_vectorized(
             S_arr, K_arr, T, r, iv, is_call
         )
         
-        return OptionGreeks(iv =iv, delta = delta, gamma = gamma, theta = theta, vega = vega)
+        return OptionGreeks(iv =iv, delta = delta, gamma = gamma, theta = theta, vega = vega, vanna = vanna, volga = volga)
 
     def get_greeks_scalar(self, is_call: bool, S: float, K: float, T: float, r: float, mid: float) -> SingleOptionGreeks:
 
         iv = implied_vol_newton(mid, S, K, T, r, is_call)
         
-        delta, gamma, theta, vega = calculate_greeks_scalar(
+        delta, gamma, theta, vega, vanna, volga = calculate_greeks_scalar(
             S, K, T, r, iv, is_call
         )
         
-        return SingleOptionGreeks(iv, delta, gamma, theta, vega)
+        return SingleOptionGreeks(iv, delta, gamma, theta, vega, vanna, volga)
 
     def calculate_portfolio_greeks(self, matrix: np.ndarray, 
                                    ce_positions: Optional[np.ndarray] = None,
