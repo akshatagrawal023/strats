@@ -1,6 +1,6 @@
 import asyncio
 
-from orchestration.prod_pipeline import ProductionHFTPipeline
+from prod_pipeline import ProductionHFTPipeline
 
 async def main():
     # Initialize pipeline

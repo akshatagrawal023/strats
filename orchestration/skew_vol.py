@@ -1,255 +1,286 @@
-# pipeline/feature_pipeline.py
-"""
-Orchestrates the entire data → Greeks → features pipeline.
-Runs every 3 seconds, manages state, handles errors.
-"""
-import asyncio
+
 import numpy as np
+import pandas as pd
+from collections import defaultdict
+import threading
 from datetime import datetime
-from typing import Dict, List, Optional, Any
-import logging
-from dataclasses import dataclass, field
+import time
+import sys
+import os
 from collections import deque
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from utils.api_utils import get_option_chain
 
-from data.fetcher import FyersDataFetcher
-from greeks.processor import GreeksProcessor
-from features.matrix_features import FastMatrixFeatures
-from utils.historical_store import HistoricalSkewStore  # We'll create this
+class OptionDataProcessor:
+    #3D rolling buffer for option chain time series.
+    def __init__(self, buffer_seconds: int = 300, interval_seconds: int = 3, n_channels: int = 23, strike_count= strike_count):
+        self.buffer_size = buffer_seconds // interval_seconds
+        self.strike_count = strike_count  # n in get_option_chain(sym, n) -> 2n+1 strikes
+        self.num_strikes = 2 * strike_count + 1
 
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
+        self.buffer = np.full((self.buffer_size, n_channels, self.num_strikes), 
+                              np.nan, dtype=np.float64)
+        self.timestamps = deque(maxlen=self.buffer_size)
+        self.underlying_prices = deque(maxlen=self.buffer_size)
+        self.expiry_dates = deque(maxlen=self.buffer_size)
 
-@dataclass
-class SymbolPipelineState:
-    """State maintained for each symbol across iterations."""
-    symbol: str
-    last_matrix: Optional[np.ndarray] = None
-    last_greeks: Optional[np.ndarray] = None
-    feature_history: deque = field(default_factory=lambda: deque(maxlen=300))
-    price_history: deque = field(default_factory=lambda: deque(maxlen=300))
-    
-    def update(self, matrix: np.ndarray, greeks: np.ndarray, features: Dict):
-        """Update state with new data."""
-        self.last_matrix = matrix
-        self.last_greeks = greeks
-        self.feature_history.append(features)
-        self.price_history.append(matrix[11, 0])  # underlying price
+        # Current write position (circular buffer)
+        self.current_idx = 0
+        self.is_filled = False
+        
+        # Thread safety for concurrent access
+        self.lock = threading.RLock()
 
-class FeaturePipeline:
-    """
-    Main orchestration class for the feature generation pipeline.
-    Runs continuously, manages state per symbol, handles errors.
-    """
-    
-    def __init__(self, symbols: List[str], 
-                 risk_free_rate: float = 0.065,
-                 poll_interval: float = 3.0):
+    def create_matrix_from_response(self, resp):
         """
+        Create a single matrix from option chain response (no windowing).
+        Returns: (matrix, underlying_ltp, future_price) or (None, None, None) if invalid.
+        Matrix shape: (11, num_strikes)
+        """
+        if not resp or resp.get('s') != 'ok':
+            return None, None, None
+            
+        data = resp['data']
+        options = data.get('optionsChain', [])
+        
+        # Create matrix (base channels only; spot/future kept separately)
+        # Channels: 0 CE_BID, 1 CE_ASK, 2 PE_BID, 3 PE_ASK, 4 CE_VOL, 5 PE_VOL, 
+        # 6 CE_OI, 7 PE_OI, 8 CE_OICH, 9 PE_OICH, 10 STRIKE
+        mat = np.full((11, self.num_strikes), np.nan, dtype=float)
+        
+        # Extract underlying spot and future price
+        underlying_ltp = np.nan
+        future_price = np.nan
+        if len(options) > 0:
+            first_row = options[0]
+            underlying_ltp = first_row.get('ltp', np.nan)
+            future_price = first_row.get('fp', np.nan)
+        
+        # Process options in pairs (CE, PE) - skip first row
+        si = 0
+        for i in range(1, len(options), 2):
+            if i + 1 >= len(options) or si >= self.num_strikes:
+                break
+            
+            a = options[i]
+            b = options[i + 1]
+            at = a.get('option_type')
+            bt = b.get('option_type')
+            
+            if at == 'CE' and bt == 'PE':
+                ce_row, pe_row = a, b
+            elif at == 'PE' and bt == 'CE':
+                ce_row, pe_row = b, a
+            else:
+                continue
+            
+            strike = ce_row.get('strike_price')
+            if strike is None:
+                continue
+            
+            mat[10, si] = strike
+            mat[0, si] = ce_row.get('bid', np.nan)
+            mat[1, si] = ce_row.get('ask', np.nan)
+            mat[4, si] = ce_row.get('volume', np.nan)
+            mat[6, si] = ce_row.get('oi', np.nan)
+            mat[8, si] = ce_row.get('oich', np.nan)
+            mat[2, si] = pe_row.get('bid', np.nan)
+            mat[3, si] = pe_row.get('ask', np.nan)
+            mat[5, si] = pe_row.get('volume', np.nan)
+            mat[7, si] = pe_row.get('oi', np.nan)
+            mat[9, si] = pe_row.get('oich', np.nan)
+            si += 1
+        
+        return mat, underlying_ltp, future_price
+    
+    def process_option_chain(self, underlying, resp):
+        """Process option chain response and store in window buffer"""
+        mat, underlying_ltp, future_price = self.create_matrix_from_response(resp)
+        if mat is None:
+            print(f"Invalid response for {underlying}")
+            return
+        
+        ts = time.time()
+        
+        # Initialize if not exists
+        if underlying not in self.data:
+            self.data[underlying] = {
+                'timestamps': np.full(self.window_size, np.nan, dtype=float),
+                'matrix_data': np.full((self.window_size, 11, self.num_strikes), np.nan, dtype=float),
+                'spot': np.full(self.window_size, np.nan, dtype=float),
+                'future_pr': np.full(self.window_size, np.nan, dtype=float),
+                'write_idx': 0,
+                'count': 0
+            }
+        
+        store = self.data[underlying]
+        
+        # Write into circular buffers
+        i = store['write_idx']
+        store['matrix_data'][i] = mat
+        store['timestamps'][i] = ts
+        store['spot'][i] = underlying_ltp
+        store['future_pr'][i] = future_price
+        store['write_idx'] = (i + 1) % self.window_size
+        if store['count'] < self.window_size:
+            store['count'] += 1
+
+        # Non-blocking dispatch to sinks
+        if callable(self.on_snapshot):
+            try:
+                self.on_snapshot(underlying, ts, mat, underlying_ltp, future_price, resp)
+            except Exception:
+                pass
+    
+    def process_and_get_latest(self, underlying, resp):
+        """
+        Process option chain and return latest matrix in one call.
+        
         Args:
-            symbols: List of symbols to track (e.g., ['NIFTY', 'BANKNIFTY'])
-            risk_free_rate: For Greeks calculation
-            poll_interval: Seconds between data fetches
-        """
-        self.symbols = symbols
-        self.poll_interval = poll_interval
-        self.running = False
+            underlying: Underlying symbol
+            resp: API response dict
         
-        # Initialize components
-        self.fetcher = FyersDataFetcher(max_concurrent=len(symbols))
-        self.greeks_processor = GreeksProcessor(risk_free_rate=risk_free_rate)
-        self.historical_store = HistoricalSkewStore()  # For skew percentiles
-        
-        # State per symbol
-        self.state: Dict[str, SymbolPipelineState] = {
-            sym: SymbolPipelineState(symbol=sym) for sym in symbols
-        }
-        
-        # Feature cache for ML model (last 5 minutes = 100 iterations at 3s)
-        self.feature_cache = deque(maxlen=100)
-        
-    async def run(self):
-        """Main pipeline loop."""
-        logger.info(f"Starting feature pipeline for symbols: {self.symbols}")
-        self.running = True
-        
-        async with self.fetcher:  # Ensures proper cleanup
-            while self.running:
-                try:
-                    start_time = datetime.now()
-                    
-                    # Step 1: Fetch all symbols concurrently
-                    matrices = await self._fetch_all_symbols()
-                    
-                    # Step 2: Process each symbol
-                    all_features = {}
-                    for symbol, matrix in matrices.items():
-                        if matrix is not None:
-                            features = await self._process_symbol(symbol, matrix)
-                            all_features[symbol] = features
-                    
-                    # Step 3: Log/Store features
-                    self._store_features(all_features, start_time)
-                    
-                    # Step 4: Log progress
-                    elapsed = (datetime.now() - start_time).total_seconds()
-                    logger.debug(f"Pipeline iteration completed in {elapsed:.2f}s")
-                    
-                    # Wait for next iteration
-                    await asyncio.sleep(max(0, self.poll_interval - elapsed))
-                    
-                except Exception as e:
-                    logger.exception(f"Pipeline error: {e}")
-                    await asyncio.sleep(1)  # Brief pause before retry
-    
-    async def _fetch_all_symbols(self) -> Dict[str, Optional[np.ndarray]]:
-        """Fetch matrices for all symbols concurrently."""
-        try:
-            # Your fetcher returns dict symbol -> matrix
-            matrices = await self.fetcher.fetch_multiple_chains(
-                self.symbols, strike_count=1  # Adjust as needed
-            )
-            return matrices
-        except Exception as e:
-            logger.error(f"Failed to fetch data: {e}")
-            return {sym: None for sym in self.symbols}
-    
-    async def _process_symbol(self, symbol: str, matrix: np.ndarray) -> Dict[str, float]:
+        Returns:
+            Latest matrix (13 channels × strikes) or None if invalid
         """
-        Process one symbol through the pipeline.
-        matrix: 13-channel raw data matrix
-        Returns feature dictionary.
-        """
-        try:
-            state = self.state[symbol]
-            
-            # Step 1: Calculate Greeks (extends matrix to 23 channels)
-            # Using your existing method
-            expiry_date = self._get_expiry_for_symbol(symbol)  # You need this
-            greeks_matrix = self.greeks_processor.get_matrix_greeks(
-                is_call=False,  # You might need both call/put separately
-                matrix=matrix,
-                days_to_expiry=7  # Compute from expiry_date
-            )
-            
-            # Step 2: Extract underlying price for momentum
-            underlying = matrix[11, 0]
-            state.price_history.append(underlying)
-            
-            # Step 3: Calculate features using FastMatrixFeatures
-            T = self.greeks_processor._get_T(None)  # Get time to expiry
-            feature_extractor = FastMatrixFeatures(
-                matrix=greeks_matrix,  # Use the extended matrix with Greeks
-                T=T,
-                r=self.greeks_processor.risk_free_rate
-            )
-            
-            # Update price history in feature extractor for momentum
-            feature_extractor.price_history = state.price_history
-            
-            # Extract all features
-            features = {}
-            
-            # Core features from earlier discussion
-            features.update(feature_extractor.skew_dislocation(self.historical_store))
-            features.update(feature_extractor.momentum_features())
-            
-            # Add additional features you want
-            features['atm_iv'] = (
-                greeks_matrix[13, feature_extractor.atm_idx] + 
-                greeks_matrix[14, feature_extractor.atm_idx]
-            ) / 2
-            
-            features['bid_ask_spread_call'] = np.nanmean(
-                (matrix[1, :] - matrix[0, :]) / ((matrix[1, :] + matrix[0, :])/2)
-            )
-            
-            # Update historical store for future skew calculations
-            self.historical_store.update(symbol, features)
-            
-            # Update symbol state
-            state.update(matrix, greeks_matrix, features)
-            
-            return features
-            
-        except Exception as e:
-            logger.error(f"Error processing {symbol}: {e}")
-            return {}
-    
-    def _store_features(self, all_features: Dict[str, Dict], timestamp: datetime):
-        """
-        Store features for ML model consumption.
-        You can save to:
-        - In-memory cache for real-time model
-        - Database for training data
-        - File for backtesting
-        """
-        # Add to rolling cache for model inference
-        self.feature_cache.append({
-            'timestamp': timestamp,
-            'features': all_features
-        })
-        
-        # Optionally save to database
-        # self.db.insert(all_features, timestamp)
-        
-    def get_ml_input(self, symbol: str) -> Optional[np.ndarray]:
-        """
-        Get features for ML model in the right format.
-        Returns array of shape (n_samples, n_features) for last N iterations.
-        """
-        if len(self.feature_cache) < 10:
+        self.process_option_chain(underlying, resp)
+        ts, matrices = self.get_matrix(underlying, window=1)
+        if matrices is None or len(matrices) == 0:
             return None
-            
-        # Extract features for specific symbol
-        symbol_features = []
-        for entry in self.feature_cache:
-            if symbol in entry['features']:
-                feat_dict = entry['features'][symbol]
-                # Convert to fixed-order array
-                feature_vector = [
-                    feat_dict.get('skew_z_-0.050', 0),
-                    feat_dict.get('skew_z_0.050', 0),
-                    feat_dict.get('skew_dislocation_score', 0),
-                    feat_dict.get('momentum_1min', 0),
-                    feat_dict.get('momentum_5min', 0),
-                    feat_dict.get('acceleration', 0),
-                    feat_dict.get('move_efficiency', 0),
-                    feat_dict.get('vol_regime', 1.0),
-                    feat_dict.get('atm_iv', 0),
-                    feat_dict.get('bid_ask_spread_call', 0)
-                ]
-                symbol_features.append(feature_vector)
-        
-        return np.array(symbol_features) if symbol_features else None
+        return matrices[-1]  # Shape: (13, strikes)
     
-    def stop(self):
-        """Stop the pipeline gracefully."""
-        self.running = False
-        logger.info("Pipeline stopping...")
+    def get_matrix(self, underlying, window=None):
+        """Get matrix data for underlying with timestamps
+        Returns: (timestamps, matrix_array)
+        matrix_array shape: (time_steps, channels, strikes)
+        """
+        if underlying not in self.data:
+            return None, None
+            
+        store = self.data[underlying]
+        if store['count'] == 0:
+            return None, None
+        
+        total = store['count']
+        widx = store['write_idx']
+        start = (widx - total) % self.window_size
+        end = widx
+        
+        if start < end:
+            base_mats = store['matrix_data'][start:end]  # (total, 11, strikes)
+            ts_arr = store['timestamps'][start:end]
+            spot_arr = store['spot'][start:end]
+            fut_arr = store['future_pr'][start:end]
+        else:
+            base_mats = np.concatenate((store['matrix_data'][start:], store['matrix_data'][:end]), axis=0)
+            ts_arr = np.concatenate((store['timestamps'][start:], store['timestamps'][:end]), axis=0)
+            spot_arr = np.concatenate((store['spot'][start:], store['spot'][:end]), axis=0)
+            fut_arr = np.concatenate((store['future_pr'][start:], store['future_pr'][:end]), axis=0)
+        
+        if window and window < total:
+            base_mats = base_mats[-window:]
+            ts_arr = ts_arr[-window:]
+            spot_arr = spot_arr[-window:]
+            fut_arr = fut_arr[-window:]
+            total = window
+        
+        # Broadcast spot and future into added channels
+        n_strikes = base_mats.shape[2]
+        spot_rows = np.repeat(spot_arr.reshape(total, 1, 1), n_strikes, axis=2)
+        fut_rows = np.repeat(fut_arr.reshape(total, 1, 1), n_strikes, axis=2)
+        augmented = np.concatenate((base_mats, spot_rows, fut_rows), axis=1)  # (total, 13, strikes)
+        
+        return ts_arr.tolist(), augmented
+    
+    def print_matrix(self, underlying, show_full=False, channel_names=None):
+        """Print matrix data in readable format"""
+        if channel_names is None:
+            channel_names = ['CE_BID', 'CE_ASK', 'PE_BID', 'PE_ASK', 
+                           'CE_VOL', 'PE_VOL', 'CE_OI', 'PE_OI',
+                           'CE_OICH', 'PE_OICH', 'STRIKE', 'UNDERLYING_LTP', 'FUTURE_PRICE']
+        
+        timestamps, matrix_array = self.get_matrix(underlying)
+        if matrix_array is None:
+            print(f"No matrix data for {underlying}")
+            return
+            
+        store = self.data[underlying]
+        num_timestamps = len(timestamps)
+        
+        # Get latest matrix (last time step)
+        latest_mat = matrix_array[-1]  # shape: (channels, strikes)
+        
+        print(f"\n=== Matrix Data for {underlying} ===")
+        print(f"Total snapshots: {num_timestamps}/{self.window_size}")
+        print(f"Latest timestamp: {pd.to_datetime(timestamps[-1], unit='s')}")
+        print(f"Matrix shape per snapshot: (channels={len(channel_names)}, strikes={latest_mat.shape[1]})")
+        
+        if show_full:
+            # Show full matrix for latest snapshot
+            print(f"\n--- Latest Snapshot ---")
+            # Create DataFrame for better display
+            df_mat = pd.DataFrame(latest_mat, 
+                                 index=channel_names,
+                                 columns=[f"S{i}" for i in range(latest_mat.shape[1])])
+            print(df_mat)
+        else:
+            # Show compact view
+            print(f"\n--- Sample (first 3 channels, first 5 strikes) ---")
+            for ch_idx in range(min(3, len(channel_names))):
+                print(f"{channel_names[ch_idx]}: {latest_mat[ch_idx, :5]}")
+            print(f"\nSTRIKE: {latest_mat[10, :5]}")  # Show strikes
+            print(f"UNDERLYING_LTP: {latest_mat[11, :5]}")  # Show underlying LTP
+            print(f"FUTURE_PRICE: {latest_mat[12, :5]}")  # Show future price
+    
+    def save_to_hdf5(self, underlying, filepath):
+        """Save matrix data to HDF5 for efficient storage and retrieval
+        Usage: processor.save_to_hdf5('RELIANCE', 'data/reliance.h5')
+        """
+        timestamps, matrix_array = self.get_matrix(underlying)
+        if matrix_array is None:
+            print(f"No data to save for {underlying}")
+            return
+        
+        with pd.HDFStore(filepath, mode='a') as hdf:
+            # Save matrix as dataset
+            hdf.put(f'{underlying}/matrix', 
+                   pd.DataFrame(matrix_array.reshape(len(timestamps), -1),
+                               index=pd.to_datetime(timestamps, unit='s')))
+            
+            # Save metadata
+            hdf.get_storer(f'{underlying}/matrix').attrs.shape = matrix_array.shape
+            hdf.get_storer(f'{underlying}/matrix').attrs.strike_count = self.strike_count
+        
+        print(f"Saved {underlying} data to {filepath}")
 
-# Helper class for historical skew storage
-class HistoricalSkewStore:
-    """Simple in-memory store for historical skew values."""
-    
-    def __init__(self, maxlen: int = 1000):
-        self.store = {}
-        self.maxlen = maxlen
+# Usage example (only runs if file is executed directly)
+if __name__ == "__main__":
+    processor = OptionDataProcessor(window_size=300, feature_window=20, strike_count=3)
+
+    # Process option chain data
+    def process_underlying_data(underlying, resp):
+        processor.process_option_chain(underlying, resp)
+        processor.print_matrix(underlying)
+
+    # Example usage in your loop
+    iteration = 0
+    while True:
+        iteration += 1
+        print(f"\n{'='*50}")
+        print(f"ITERATION {iteration}")
+        print(f"{'='*50}")
         
-    def update(self, symbol: str, features: Dict):
-        """Store skew values for this symbol."""
-        if symbol not in self.store:
-            self.store[symbol] = {}
-            
-        for key, value in features.items():
-            if 'skew_' in key and not np.isnan(value):
-                if key not in self.store[symbol]:
-                    self.store[symbol][key] = deque(maxlen=self.maxlen)
-                self.store[symbol][key].append(value)
-    
-    def get(self, key: str, default=None):
-        """Get historical values for a specific skew metric."""
-        # This is simplified - in practice you'd need symbol-specific
-        for symbol_data in self.store.values():
-            if key in symbol_data:
-                return list(symbol_data[key])
-        return default
+        for underlying in ["RELIANCE", "HDFCBANK"]:
+            sym = f"NSE:{underlying}-EQ"
+            resp = get_option_chain(sym, 3)
+            process_underlying_data(underlying, resp)
+        
+        # Show overall status with matrix info
+        print(f"\n=== OVERALL STATUS ===")
+        for underlying in ["RELIANCE", "HDFCBANK"]:
+            if underlying in processor.data:
+                store = processor.data[underlying]
+                num_snapshots = len(store.get('timestamps', []))
+                print(f"{underlying}: {num_snapshots}/{processor.window_size} snapshots")
+        
+        time.sleep(2)  # Adjust frequency as needed
