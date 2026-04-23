@@ -129,6 +129,23 @@ class VirtualBroker:
 
         return unrealized_pnl
 
+    def virtual_close_all(self, sim_id, current_prices):
+        """
+        Settles all legs of a position and removes it from active tracking.
+        """
+        pnl = self.update_pnl(sim_id, current_prices)
+        if pnl is not None:
+            ts = datetime.datetime.now().isoformat()
+            self.trade_history.append({
+                'sim_id': sim_id,
+                'final_pnl': pnl,
+                'exit_time': ts,
+                'margin': self.positions[sim_id]['margin_locked']
+            })
+            del self.positions[sim_id]
+            print(f"[{sim_id}] MOCKED EXIT -> Final PnL: ₹{pnl:.2f} | Time: {ts}")
+        return pnl
+
     def flush_pnl_csv(self):
         """
         Flush buffered PnL rows to CSV. Called by the archiver flush loop

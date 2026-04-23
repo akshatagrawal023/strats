@@ -18,7 +18,16 @@ from paper_trading.market_features import (
 from paper_trading.hdf5_archiver import HDF5Archiver
 from collections import deque
 
+import datetime
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
+
+def is_past_equity_market_close():
+    """Returns True if current IST time is past 15:30."""
+    now = datetime.datetime.now()
+    # Assuming local time is IST as per metadata (+05:30)
+    if now.hour > 15 or (now.hour == 15 and now.minute >= 30):
+        return True
+    return False
 
 
 async def iron_butterfly_scanner(
@@ -223,8 +232,8 @@ async def iron_butterfly_scanner(
 
 
 async def main():
-    # symbols = ["NSE:NIFTY50-INDEX"]
-    symbols = ["MCX:CRUDEOIL25APR-FUT"]
+    symbols = ["NSE:NIFTY50-INDEX"]
+    # symbols = ["MCX:CRUDEOIL25APR-FUT"]
 
     pipeline = ProductionHFTPipeline(
         symbols=symbols,
@@ -245,8 +254,19 @@ async def main():
         iron_butterfly_scanner(pipeline, broker, archiver, symbols[0])
     )
 
+    while pipeline.running:
+        if "NSE" in symbols[0] and is_past_equity_market_close():
+            logging.info("Current time is past 15:30 IST. Equity market is closed. Stopping simulation.")
+            pipeline.stop()
+            break
+        await asyncio.sleep(5)
+
     try:
-        await asyncio.gather(pipeline_task, scanner_task)
+        if not pipeline.running:
+            # If we exited due to time check, wait for tasks to finish
+            await asyncio.gather(pipeline_task, scanner_task, return_exceptions=True)
+        else:
+            await asyncio.gather(pipeline_task, scanner_task)
     except KeyboardInterrupt:
         pass
     finally:
