@@ -3,6 +3,10 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from utils.fyers_api import get_access_token
 from utils.config import client_id 
 from fyers_apiv3 import fyersModel
+import logging
+
+# Silence internal Fyers SDK request logs (Status 200)
+logging.getLogger("FyersAPIRequest").setLevel(logging.WARNING)
 
 
 class FyersInstance:

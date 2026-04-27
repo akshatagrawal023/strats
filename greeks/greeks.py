@@ -73,7 +73,9 @@ def calculate_iv_vectorized(prices: np.ndarray, S: np.ndarray, K: np.ndarray,
 def calculate_greeks_vectorized(S: np.ndarray, K: np.ndarray, T: float, 
                                r: float, sigma: np.ndarray, 
                                is_call: bool) -> Tuple[np.ndarray, np.ndarray, 
-                                                              np.ndarray, np.ndarray]:
+                                                              np.ndarray, np.ndarray,
+                                                              np.ndarray, np.ndarray,
+                                                              np.ndarray]:
     """Vectorized Black-Scholes Greeks calculation"""
     n = len(S)
     deltas = np.empty(n, dtype=np.float64)
@@ -82,6 +84,7 @@ def calculate_greeks_vectorized(S: np.ndarray, K: np.ndarray, T: float,
     vegas = np.empty(n, dtype=np.float64)
     vannas = np.empty(n, dtype=np.float64)
     volgas = np.empty(n, dtype=np.float64)
+    charms = np.empty(n, dtype=np.float64)
     
     # Use max to avoid issues with very small T
     T_safe = max(T, 1e-6)
@@ -92,7 +95,7 @@ def calculate_greeks_vectorized(S: np.ndarray, K: np.ndarray, T: float,
     for i in prange(n):
         # Skip if invalid inputs
         if np.isnan(sigma[i]) or sigma[i] <= 0 or S[i] <= 0 or K[i] <= 0:
-            deltas[i] = gammas[i] = thetas[i] = vegas[i] = vannas[i] = volgas[i] = np.nan
+            deltas[i] = gammas[i] = thetas[i] = vegas[i] = vannas[i] = volgas[i] = charms[i] = np.nan
             continue
         
         S_over_K = S[i] / K[i]
@@ -122,14 +125,18 @@ def calculate_greeks_vectorized(S: np.ndarray, K: np.ndarray, T: float,
         vega_raw = S[i] * pdf_d1 * sqrt_T
         vanna_raw = -pdf_d1 * d2 / sigma[i]            # ∂Vega_raw/∂S
         volga_raw = vega_raw * (d1 * d2 / sigma[i])    # ∂Vega_raw/∂σ
+        
+        # Charm = ∂Delta/∂T = -N'(d1) * [ r / (σ√T) - d2 / (2T) ]
+        charm_raw = -pdf_d1 * (r / (sigma[i] * sqrt_T) - d2 / (2.0 * T_safe))
 
         vannas[i] = vanna_raw / 100.0                  # match Vega scaling
         volgas[i] = volga_raw / 100.0                  # per 1% vol change
+        charms[i] = charm_raw / 365.0                  # decay per day
     
-    return deltas, gammas, thetas, vegas, vannas, volgas
+    return deltas, gammas, thetas, vegas, vannas, volgas, charms
 
 def calculate_greeks_scalar(S: float, K: float, T: float, r: float, 
-                           sigma: float, is_call: bool) -> Tuple[float, float, float, float]:
+                           sigma: float, is_call: bool) -> Tuple[float, float, float, float, float, float, float]:
     """
     Calculate Greeks for a single option (scalar inputs, scalar outputs).
     Wraps your existing vectorized function.
@@ -141,6 +148,6 @@ def calculate_greeks_scalar(S: float, K: float, T: float, r: float,
     
     # Use your vectorized function
     res = calculate_greeks_vectorized(S_arr, K_arr, T, r, sigma_arr, is_call)
-    return tuple(r[0] for r in res)   # delta, gamma, theta, vega, vanna, volga
+    return tuple(r[0] for r in res)   # delta, gamma, theta, vega, vanna, volga, charm
 
 

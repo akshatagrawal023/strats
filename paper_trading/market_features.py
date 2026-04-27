@@ -68,12 +68,12 @@ def compute_atm_iv_and_greeks(
         r: Risk-free rate
 
     Returns:
-        greeks_mat: np.ndarray shape (8, n_strikes)
-                    Channels: [Delta, Gamma, Theta, Vega, Vanna, Volga, CE_IV, PE_IV]
+        greeks_mat: np.ndarray shape (12, n_strikes)
+                    Channels: [Delta, Gamma, Theta, Vega, Vanna, Volga, CE_IV, PE_IV, ... Charm]
         valid_mask: bool array marking strikes where calculation succeeded
     """
     n = len(strikes)
-    greeks_mat = np.full((11, n), np.nan, dtype=np.float64)
+    greeks_mat = np.full((12, n), np.nan, dtype=np.float64)
 
     ce_mid = (ce_bid + ce_ask) / 2.0
     pe_mid = (pe_bid + pe_ask) / 2.0
@@ -88,12 +88,14 @@ def compute_atm_iv_and_greeks(
     v_spot = np.full(np.sum(valid), spot)
 
     # --- Step 1: IV (vectorized, numba-accelerated) ---
+    t_start = time.perf_counter()
     ce_ivs = calculate_iv_vectorized(
         prices=ce_mid[valid], S=v_spot, K=v_strikes, T=T, r=r, is_call=True
     )
     pe_ivs = calculate_iv_vectorized(
         prices=pe_mid[valid], S=v_spot, K=v_strikes, T=T, r=r, is_call=False
     )
+    t_iv = time.perf_counter()
 
     # Fold IV into channels 6 and 7
     greeks_mat[6, valid] = ce_ivs
@@ -106,7 +108,7 @@ def compute_atm_iv_and_greeks(
         v_spot_g = np.full(np.sum(valid_iv), spot)
         v_ce_ivs = greeks_mat[6, valid_iv]
 
-        deltas, gammas, thetas, vegas, vannas, volgas = calculate_greeks_vectorized(
+        deltas, gammas, thetas, vegas, vannas, volgas, charms = calculate_greeks_vectorized(
             S=v_spot_g, K=v_strikes_g, T=T, r=r, sigma=v_ce_ivs, is_call=True
         )
 
@@ -116,6 +118,8 @@ def compute_atm_iv_and_greeks(
         greeks_mat[3, valid_iv] = vegas
         greeks_mat[4, valid_iv] = vannas
         greeks_mat[5, valid_iv] = volgas
+        greeks_mat[11, valid_iv] = charms
+    t_greeks = time.perf_counter()
 
     # --- Step 3: Derived Feature Channels (same pass, no extra function calls) ---
 
@@ -136,8 +140,15 @@ def compute_atm_iv_and_greeks(
     greeks_mat[10, both_iv_valid] = (
         greeks_mat[7, both_iv_valid] - greeks_mat[6, both_iv_valid]
     )
+    t_end = time.perf_counter()
 
-    return greeks_mat, valid
+    timings = {
+        'iv': (t_iv - t_start) * 1000,
+        'core': (t_greeks - t_iv) * 1000,
+        'features': (t_end - t_greeks) * 1000
+    }
+
+    return greeks_mat, timings
 
 
 def compute_volatility_skew(greeks_mat: np.ndarray, mid_idx: int, wing_offset: int) -> float:

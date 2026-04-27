@@ -14,11 +14,11 @@ def estimate_futures_costs(price, lot_size=1, is_sell=False, is_buy=False):
 
 def estimate_options_costs(premium, lot_size=1, is_sell=False, is_buy=False):
     brokerage = 20
-    stt = 0.000625 * premium * lot_size if is_sell else 0  # Only on sell leg, on premium
-    exch = 0.0005 * premium * lot_size
-    sebi = 0.000001 * premium * lot_size
-    stamp = 0.00003 * premium * lot_size if is_buy else 0  # Only on buy leg
-    gst = 0.18 * brokerage
+    stt = 0.0015 * premium * lot_size if is_sell else 0  # Updated 0.15% on sell leg
+    exch = 0.0003503 * premium * lot_size # NSE Flat charge 0.03503%
+    sebi = 0.00001 * premium * lot_size # SEBI Rs 10 per cr
+    stamp = 0.00003 * premium * lot_size if is_buy else 0  # Only on buy leg 0.003%
+    gst = 0.18 * (brokerage + exch + sebi) # GST 18% on specific elements
     total = brokerage + stt + exch + sebi + stamp + gst
     return total
 

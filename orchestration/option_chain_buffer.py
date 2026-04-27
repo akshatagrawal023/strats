@@ -14,41 +14,61 @@ class OptionChainBuffer:
         self.n_channels = n_channels
         self.max_strikes = max_strikes
         
-        # Main 3D buffer: (time, channel, strike)
-        self.buffer = np.full((self.buffer_size, n_channels, self.max_strikes), 
+        # Main 3D buffer: (time, channel, strike) — raw API data
+        self.buffer = np.full((self.buffer_size, n_channels, self.max_strikes),
                               np.nan, dtype=np.float64)
-        
+
+        # Greeks 3D buffer: (time, 14, strike)
+        # Channels: [Delta, Gamma, Theta, Vega, Vanna, Volga, CE_IV, PE_IV,
+        #            Moneyness, Theta/Vega Ratio, IV Skew per strike,
+        #            Charm, CE_IV Velocity, PE_IV Velocity]
+        # Computed once per tick in prod_pipeline and shared by all strategies.
+        self.GREEKS_CHANNELS = 14
+        self.greeks_buffer = np.full((self.buffer_size, self.GREEKS_CHANNELS, self.max_strikes),
+                                     np.nan, dtype=np.float64)
+
         # Metadata for each time slot
         self.timestamps = deque(maxlen=self.buffer_size)
         self.underlying_prices = deque(maxlen=self.buffer_size)
         self.expiry_dates = deque(maxlen=self.buffer_size)
-        
+        self.T_values = deque(maxlen=self.buffer_size)
+        self.future_prices = deque(maxlen=self.buffer_size)
+        self.vix_prices = deque(maxlen=self.buffer_size)
+        self.pcr_values = deque(maxlen=self.buffer_size)
+
         # Current write position (circular buffer)
         self.current_idx = 0
         self.is_filled = False
-        
+
         # Thread safety for concurrent access
         self.lock = threading.RLock()
         
     def add_matrix(self, raw_matrix: np.ndarray, 
                    timestamp: float, 
                    underlying: float,
-                   expiry: str) -> None:
+                   expiry: str,
+                   future_price: float = np.nan,
+                   vix: float = np.nan,
+                   pcr: float = np.nan,
+                   T_value: float = np.nan) -> bool:
         """
         Add raw API matrix mapped to the buffer.
+        Returns True if successful, False if rejected.
         """
         with self.lock:
-            # Ensure matrix has correct dimensions
+            # Strict shape check. Reject bad data instead of blindly interpolating
             if raw_matrix.shape != (self.n_channels, self.max_strikes):
-                matrix = self._normalize_matrix(raw_matrix)
-            else:
-                matrix = raw_matrix
+                return False
                 
             # Add to circular buffer
-            self.buffer[self.current_idx] = matrix
+            self.buffer[self.current_idx] = raw_matrix
             self.timestamps.append(timestamp)
             self.underlying_prices.append(underlying)
             self.expiry_dates.append(expiry)
+            self.T_values.append(T_value)
+            self.future_prices.append(future_price)
+            self.vix_prices.append(vix)
+            self.pcr_values.append(pcr)
             
             # Update write position
             self.current_idx = (self.current_idx + 1) % self.buffer_size
@@ -56,22 +76,47 @@ class OptionChainBuffer:
             # Mark as filled after first full cycle
             if not self.is_filled and len(self.timestamps) == self.buffer_size:
                 self.is_filled = True
-    
-    def _normalize_matrix(self, matrix: np.ndarray) -> np.ndarray:
-        """Handle variable strike counts by padding/truncating."""
-        current_strikes = matrix.shape[1]
-        normalized = np.full((self.n_channels, self.max_strikes), np.nan)
-        
-        if current_strikes >= self.max_strikes:
-            # Take ATM strikes (middle of the chain)
-            start = (current_strikes - self.max_strikes) // 2
-            normalized[:, :] = matrix[:, start:start + self.max_strikes]
-        else:
-            # Pad with NaN on both sides, keeping strikes centered
-            pad = (self.max_strikes - current_strikes) // 2
-            normalized[:, pad:pad + current_strikes] = matrix
-            
-        return normalized
+                
+            return True
+
+    def add_greeks_matrix(self, greeks_matrix: np.ndarray) -> bool:
+        """
+        Store the pre-computed greeks matrix for the most recently added raw tick.
+        Must be called immediately after add_matrix() for the same tick.
+
+        greeks_matrix shape: (14, max_strikes)
+        Channels: [Delta, Gamma, Theta, Vega, Vanna, Volga, CE_IV, PE_IV,
+                   Moneyness, Theta/Vega Ratio, IV Skew per strike, Charm,
+                   CE_IV Velocity, PE_IV Velocity]
+        """
+        with self.lock:
+            if greeks_matrix.shape != (self.GREEKS_CHANNELS, self.max_strikes):
+                return False
+            # Write to the slot that was just filled by add_matrix()
+            write_idx = (self.current_idx - 1) % self.buffer_size
+            self.greeks_buffer[write_idx] = greeks_matrix
+            return True
+
+    def get_greeks_slice(self, lookback: int = None) -> Optional[np.ndarray]:
+        """
+        Get the most recent greeks time slices in chronological order.
+        Returns: Array of shape (lookback, 8, max_strikes), or None if empty.
+        """
+        with self.lock:
+            n_avail = len(self.timestamps)
+            if n_avail == 0:
+                return None
+
+            if lookback is None or lookback > n_avail:
+                lookback = n_avail
+
+            if self.is_filled:
+                indices = [(self.current_idx - lookback + i) % self.buffer_size
+                           for i in range(lookback)]
+            else:
+                indices = list(range(n_avail - lookback, n_avail))
+
+            return self.greeks_buffer[indices]
     
     def get_time_slice(self, lookback: int = None) -> np.ndarray:
         """
@@ -110,7 +155,7 @@ class OptionChainBuffer:
                          lookback: int = None) -> np.ndarray:
         """
         Extract specific moneyness points across time exactly when required for ML.
-        This allows keeping the original raw density for Greeks.
+        This fixes the 'Strike Drift' problem.
         """
         full_slice = self.get_time_slice(lookback)
         if full_slice is None:
@@ -141,9 +186,19 @@ class OptionChainBuffer:
         result = np.full((n_time, n_targets, self.n_channels), np.nan)
         
         for t in range(n_time):
+            # Mask out NaN strikes to prevent argmin crashes
+            valid_mask = ~np.isnan(moneyness[t])
+            if not np.any(valid_mask):
+                continue
+                
             for i, target in enumerate(moneyness_targets):
-                # Find closest strike
-                idx = np.argmin(np.abs(moneyness[t] - target))
-                result[t, i, :] = full_slice[t, :, idx]
+                # Find closest strike safely
+                diffs = np.abs(moneyness[t] - target)
+                # Apply high penalty to NaNs so they aren't chosen
+                diffs[~valid_mask] = np.inf 
+                idx = np.argmin(diffs)
+                
+                if not np.isinf(diffs[idx]):
+                    result[t, i, :] = full_slice[t, :, idx]
         
         return result

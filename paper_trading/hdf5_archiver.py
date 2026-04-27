@@ -42,8 +42,8 @@ class HDF5Archiver:
           /greeks_matrices— 3D numpy: (n_ticks, 8, n_strikes)
     """
 
-    def __init__(self, output_dir: str = "paper_trading_logs", flush_interval: int = 60):
-        self.output_dir = output_dir
+    def __init__(self, output_dir: str = "hdf5_data_archives", flush_interval: int = 60):
+        self.output_dir = os.path.join(os.path.dirname(__file__), output_dir)
         self.flush_interval = flush_interval  # seconds
 
         os.makedirs(output_dir, exist_ok=True)

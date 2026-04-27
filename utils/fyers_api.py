@@ -49,6 +49,12 @@ def save_access_token(access_token, refresh_token=None, expires_in=86400):
             token_store["refresh_expiry"] = now + (15 * 24 * 3600)  # 15 days
         
         save_token_store(token_store)
+        
+        # Backward compatibility: write to access_token.txt
+        txt_path = os.path.join(PARENT_DIR, 'access_token.txt')
+        with open(txt_path, 'w') as f:
+            f.write(access_token)
+            
     except Exception as e:
         print(f"Error saving tokens: {e}")
 
@@ -129,8 +135,12 @@ def refresh_access_token():
         refresh_token = token_store.get("refresh_token")
         refresh_expiry = token_store.get("refresh_expiry", 0)
         
-        if not refresh_token or time.time() >= refresh_expiry:
-            print("Refresh token expired or not available")
+        if not refresh_token:
+            print("Refresh token not available")
+            return None
+            
+        if refresh_expiry > 0 and time.time() >= refresh_expiry:
+            print("Refresh token expired. Manual login required.")
             return None
         
         print("Using refresh token to get new access token...")

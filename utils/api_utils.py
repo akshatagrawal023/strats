@@ -157,19 +157,20 @@ def get_positions():
     fyers = FyersInstance.get_instance()
     return fyers_rate_limited_api_call(fyers.positions)
 
-def get_option_chain(symbol, strikecount=1, fyers=None):
+def get_option_chain(symbol, strikecount=1, timestamp = "", fyers=None):
     """
     Get option chain data.
     
     Args:
         symbol: Symbol string (e.g., "NSE:RELIANCE-EQ")
         strikecount: Number of strikes
+        timestamp: Timestamp
         fyers: Optional FyersInstance (if None, will get singleton)
     """
     data = {
     "symbol":symbol,
     "strikecount":strikecount,
-    "timestamp": ""
+    "timestamp": timestamp
     }
     if fyers is None:
         fyers = FyersInstance.get_instance()
@@ -192,5 +193,29 @@ def get_orderbook(order_id=None):
 
 def place_order(order_list):
     fyers = FyersInstance.get_instance()
-    response = fyers.place_basket_orders(data=order_list)
+    response = fyers_rate_limited_api_call(fyers.place_basket_orders, data=order_list)
+    return response
+
+def modify_order(order_data):
+    """
+    Modify single or multiple orders.
+    Args: order_data: dict or list of dicts with modifications
+    """
+    fyers = FyersInstance.get_instance()
+    if isinstance(order_data, list):
+        response = fyers_rate_limited_api_call(fyers.modify_basket_orders, data=order_data)
+    else:
+        response = fyers_rate_limited_api_call(fyers.modify_order, data=order_data)
+    return response
+
+def cancel_order(order_data):
+    """
+    Cancel an order or multiple orders.
+    Args: order_data: dict with 'id' or list of dicts
+    """
+    fyers = FyersInstance.get_instance()
+    if isinstance(order_data, list):
+        response = fyers_rate_limited_api_call(fyers.cancel_basket_orders, data=order_data)
+    else:
+        response = fyers_rate_limited_api_call(fyers.cancel_order, data=order_data)
     return response
