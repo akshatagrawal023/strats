@@ -151,113 +151,39 @@ def compute_atm_iv_and_greeks(
     return greeks_mat, timings
 
 
-def compute_volatility_skew(greeks_mat: np.ndarray, mid_idx: int, wing_offset: int) -> float:
+def compute_smile_spread(greeks_mat: np.ndarray, atm_idx: int, wing_offset: int) -> float:
     """
-    Compute Put-Call IV skew from the greeks matrix at a specific wing width.
-
-    Reads directly from channel 10 (IV Skew per strike — PE_IV minus CE_IV),
-    which is pre-computed in the same pass as the other greeks.
-    No separate function calls needed.
-
-    A positive skew means puts are more expensive (normal for indices).
-    A violent spike in skew without spot movement = panic signal.
-
-    Args:
-        greeks_mat: shape (11, n_strikes), channel 10 = per-strike IV skew
-        mid_idx: Index of ATM strike
-        wing_offset: Number of strikes away from ATM for the wing
-
-    Returns:
-        skew: float (NaN if data missing)
+    Compute ATM IV minus Wing IV average.
+    Always negative for indices (smile curvature).
+    If it becomes less negative, the ATM is relatively expensive (signal).
     """
-    put_idx = mid_idx - wing_offset
-    if put_idx < 0 or put_idx >= greeks_mat.shape[1]:
+    n = greeks_mat.shape[1]
+    ci, pi = atm_idx + wing_offset, atm_idx - wing_offset
+    if ci >= n or pi < 0:
         return np.nan
-    # Ch 10 = PE_IV - CE_IV, already computed per-strike in the matrix
-    return float(greeks_mat[10, put_idx])
-
-
-def compute_25delta_skew(greeks_mat: np.ndarray) -> float:
-    """
-    Compute 25-Delta Put-Call IV Skew.
-    Finds strikes closest to 25-delta (call) and -25-delta (put).
-    Returns PE_IV - CE_IV of those respective options.
-
-    This adapts automatically to spot movement, unlike fixed-strike-offset skew.
-
-    Args:
-        greeks_mat: shape (11, n_strikes), channel 0 = CE Delta, channels 6/7 = CE/PE IV
-
-    Returns:
-        skew: float (NaN if data missing)
-    """
-    deltas = greeks_mat[0]
-    pe_deltas = deltas - 1.0  # PE Delta = CE Delta - 1 (approximation)
-
-    valid_ce = ~np.isnan(deltas) & ~np.isnan(greeks_mat[6])
-    valid_pe = ~np.isnan(pe_deltas) & ~np.isnan(greeks_mat[7])
-
-    if not np.any(valid_ce) or not np.any(valid_pe):
+    
+    # Ch 6/7 are CE/PE IVs
+    atm_iv = (greeks_mat[6, atm_idx] + greeks_mat[7, atm_idx]) / 2.0
+    wing_iv = (greeks_mat[6, ci] + greeks_mat[7, pi]) / 2.0
+    
+    if np.isnan(atm_iv) or np.isnan(wing_iv):
         return np.nan
-
-    ce_idx = np.nanargmin(np.where(valid_ce, np.abs(deltas - 0.25), np.inf))
-    pe_idx = np.nanargmin(np.where(valid_pe, np.abs(pe_deltas - (-0.25)), np.inf))
-
-    if np.isinf(np.abs(deltas[ce_idx] - 0.25)) or np.isinf(np.abs(pe_deltas[pe_idx] - (-0.25))):
-        return np.nan
-
-    return float(greeks_mat[7, pe_idx] - greeks_mat[6, ce_idx])
+    
+    return float(atm_iv - wing_iv)
 
 
-def compute_smile_polynomial(greeks_mat: np.ndarray) -> tuple:
+def compute_rolling_zscore(history: deque) -> float:
     """
-    Fits a degree-2 polynomial to the IV smile (CE IV vs log-moneyness).
-    IV(k) ≈ a₀ + a₁·k + a₂·k²   (where k = log(S/K))
-
-    Args:
-        greeks_mat: shape (11, n_strikes), ch 6 = CE_IV, ch 8 = Moneyness
-
-    Returns:
-        (a0, a1, a2): tuple of floats (ATM level, Slope/Skew, Curvature/Smile)
+    Generic rolling Z-Score calculation for any deque history.
+    Returns 0.0 if insufficient history or zero variance.
     """
-    moneyness = greeks_mat[8]
-    ce_iv = greeks_mat[6]
-
-    valid = ~np.isnan(moneyness) & ~np.isnan(ce_iv) & (moneyness > 0)
-    if np.sum(valid) < 3:
-        return np.nan, np.nan, np.nan
-
-    k = np.log(moneyness[valid])
-    iv = ce_iv[valid]
-
-    # polyfit returns highest degree first: [a2, a1, a0]
-    try:
-        coeffs = np.polyfit(k, iv, 2)
-        return float(coeffs[2]), float(coeffs[1]), float(coeffs[0])
-    except Exception:
-        return np.nan, np.nan, np.nan
-
-
-def compute_iv_zscore(atm_iv_history: deque) -> tuple:
-    """
-    Compute Z-Score of the latest ATM IV vs its 1-hour rolling history.
-
-    Returns:
-        (mean, std, z_score): tuple of floats
-        Returns (nan, nan, 0.0) if insufficient history.
-    """
-    if len(atm_iv_history) < 2:
-        return np.nan, np.nan, 0.0
-
-    arr = np.array(atm_iv_history, dtype=np.float64)
-    mean = np.mean(arr)
-    std = np.std(arr)
-
-    if std < 1e-8:
-        return mean, std, 0.0
-
-    z = (arr[-1] - mean) / std
-    return float(mean), float(std), float(z)
+    if len(history) < 60:  # Require 60 ticks (~3 mins at 3s) for a stable signal
+        return 0.0
+    arr = np.array(history, dtype=np.float64)
+    mu, sigma = np.mean(arr), np.std(arr)
+    if sigma < 1e-8:
+        return 0.0
+    return float((arr[-1] - mu) / sigma)
 
 
 def compute_spot_ewm_volatility(spot_history: deque, alpha: float = 0.06) -> dict:

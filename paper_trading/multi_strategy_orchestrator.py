@@ -21,11 +21,13 @@ from paper_trading.strategies.directional_spread.scanner import evaluate_market_
 from paper_trading.strategies.ratio_spread.scanner import evaluate_market_tick as eval_rs
 from paper_trading.strategies.calendar_spread.scanner import evaluate_market_tick as eval_cs
 from paper_trading.strategies.backspread.scanner import evaluate_market_tick as eval_bs
+from paper_trading.strategies.VolTrade.scanner import evaluate_market_tick as eval_vt
 
 # Import shared central features
 from paper_trading.market_features import (
     compute_25delta_skew,
-    compute_iv_zscore,
+    compute_smile_spread,
+    compute_rolling_zscore,
     compute_spot_ewm_volatility,
     detect_panic,
 )
@@ -55,6 +57,7 @@ class MarketState:
         self.spot_history = deque(maxlen=1200)
         self.atm_iv_history = deque(maxlen=1200)
         self.skew_history = deque(maxlen=1200)
+        self.spread_history = deque(maxlen=1200)
 
 async def main():
     symbols = ["NSE:NIFTY50-INDEX", "BSE:SENSEX-INDEX"]
@@ -66,7 +69,10 @@ async def main():
     )
     
     broker = VirtualBroker(start_capital=1_000_000.0)
-    archiver = HDF5Archiver(output_dir=SHARED_LOGS_DIR, flush_interval=60)
+    
+    # Use the new dedicated HDF5 archives directory inside paper_trading
+    archiver_dir = os.path.join(CURRENT_DIR, "hdf5_data_archives")
+    archiver = HDF5Archiver(output_dir=archiver_dir, flush_interval=60)
     
     pipeline_task = asyncio.create_task(pipeline.run())
     
@@ -80,6 +86,7 @@ async def main():
         "RS": {sym: {} for sym in symbols},
         "BS": {sym: {} for sym in symbols},
         "CS": {sym: {} for sym in symbols},
+        "VT": {sym: {} for sym in symbols},
     }
 
     warmup_period = 20
@@ -119,32 +126,34 @@ async def main():
                 atm_idx = int(np.nanargmin(np.abs(greeks_mat[8] - 1.0)))
                 atm_iv = float(greeks_mat[6, atm_idx])
                 skew = compute_25delta_skew(greeks_mat)
+                spread = compute_smile_spread(greeks_mat, atm_idx, wing_offset=2)
                 
                 ms = symbol_states[symbol]
                 ms.spot_history.append(spot)
                 if not np.isnan(atm_iv): ms.atm_iv_history.append(atm_iv)
                 if not np.isnan(skew): ms.skew_history.append(skew)
+                if not np.isnan(spread): ms.spread_history.append(spread)
 
                 # Initialize defaults if warmup not complete
                 features = {
                     'atm_idx': atm_idx,
-                    'iv_z_score': None,
-                    'skew_z': None,
+                    'iv_z_score': 0.0,
+                    'smile_z': 0.0,
+                    'skew_z': 0.0,
                     'panic': False,
-                    'momentum': None,
-                    'vol': None,
-                    'ce_iv_vel': greeks_mat[12, atm_idx],
-                    'pe_iv_vel': greeks_mat[13, atm_idx],
-                    'charm': greeks_mat[11, atm_idx]
+                    'momentum': 0.0,
+                    'vol': 0.0
                 }
                 
                 if len(ms.spot_history) >= warmup_period:
                     spot_stats = compute_spot_ewm_volatility(ms.spot_history)
-                    _, _, iv_z = compute_iv_zscore(ms.atm_iv_history)
+                    iv_z = compute_rolling_zscore(ms.atm_iv_history)
+                    smile_z = compute_rolling_zscore(ms.spread_history)
                     panic, skew_z = detect_panic(ms.skew_history, skew, spot_stats)
                     
                     features.update({
                         'iv_z_score': iv_z,
+                        'smile_z': smile_z,
                         'skew_z': skew_z,
                         'panic': panic,
                         'momentum': spot_stats['momentum'],
@@ -169,6 +178,7 @@ async def main():
                 eval_rs(*eval_args, strategy_states["RS"][symbol])
                 eval_bs(*eval_args, strategy_states["BS"][symbol])
                 eval_cs(*eval_args, strategy_states["CS"][symbol])
+                eval_vt(*eval_args, strategy_states["VT"][symbol])
 
             # Global Print every 15s instead of per-strategy
             now = time.time()
