@@ -34,37 +34,33 @@ class HDF5Archiver:
     """
     Thread-safe background archiver that persists option chain data per tick
     into a unified HDF5 file (one file per trading day).
-
-    File structure:
-        NIFTY_<YYYYMMDD>.h5
-          /ticks          — DataFrame: one row per timestamp (scalars + MTM)
-          /raw_matrices   — 3D numpy: (n_ticks, n_channels, n_strikes)
-          /greeks_matrices— 3D numpy: (n_ticks, 8, n_strikes)
     """
-
-    def __init__(self, output_dir: str = "hdf5_data_archives", flush_interval: int = 60):
+    def __init__(self, symbol: str, output_dir: str = "hdf5_data_archives", flush_interval: int = 60):
+        self.symbol = symbol.split(":")[-1].split("-")[0] # e.g. NIFTY50
         self.output_dir = os.path.join(os.path.dirname(__file__), output_dir)
         self.flush_interval = flush_interval  # seconds
 
-        os.makedirs(output_dir, exist_ok=True)
+        os.makedirs(self.output_dir, exist_ok=True)
 
         # In-memory row buffers
         self._scalar_rows = []        # list of dicts
-        self._raw_matrices = []       # list of np.ndarray (n_channels, n_strikes)
-        self._greeks_matrices = []    # list of np.ndarray (8, n_strikes)
+        self._raw_matrices = []       # list of np.ndarray
+        self._greeks_matrices = []    # list of np.ndarray
 
         self._lock = threading.Lock()
         self._shutdown = threading.Event()
+        self._last_n_strikes = 0
 
         # Start background flush thread
         self._flush_thread = threading.Thread(target=self._flush_loop, daemon=True)
         self._flush_thread.start()
 
-        logger.info(f"[HDF5Archiver] Initialized. Output: {output_dir}, Flush: {flush_interval}s")
+        logger.info(f"[HDF5Archiver-{self.symbol}] Initialized. Output: {self.output_dir}, Flush: {flush_interval}s")
 
-    def _get_filepath(self) -> str:
+    def _get_filepath(self, n_strikes: int = 0) -> str:
         date_str = datetime.now().strftime("%Y%m%d")
-        return os.path.join(self.output_dir, f"NIFTY_{date_str}.h5")
+        suffix = f"_s{n_strikes}" if n_strikes > 0 else ""
+        return os.path.join(self.output_dir, f"{self.symbol}_{date_str}{suffix}.h5")
 
     def record_tick(
         self,
@@ -82,12 +78,13 @@ class HDF5Archiver:
         mtm_pnl: Optional[dict] = None, # {'IB_W50': -700.0, 'IB_W100': -600.0, ...}
     ):
         """
-        Queue one tick's data for background archival.
-        This is the only method called from the hot asyncio loop.
-        It is non-blocking — just appends to in-memory lists under a lock.
+        Record tick data. Dynamically determines n_strikes to avoid HDF5 broadcast errors.
         """
         if not HDF5_AVAILABLE:
             return
+            
+        n_strikes = raw_matrix.shape[1]
+        self._last_n_strikes = n_strikes
 
         row = {
             'timestamp': timestamp,
@@ -136,7 +133,7 @@ class HDF5Archiver:
             self._raw_matrices.clear()
             self._greeks_matrices.clear()
 
-        filepath = self._get_filepath()
+        filepath = self._get_filepath(n_strikes=self._last_n_strikes)
 
         try:
             with h5py.File(filepath, 'a') as f:

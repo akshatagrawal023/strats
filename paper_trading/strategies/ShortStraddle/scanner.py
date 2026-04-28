@@ -28,12 +28,14 @@ def evaluate_market_tick(
     atm_idx = features.get('atm_idx')
     if atm_idx is None: return
 
+    sym_prefix = symbol.split(":")[1].split("-")[0]
+
     # --- MTM TRACKING ---
     has_trade = False
     for sim_id in list(broker.positions.keys()):
-        if symbol in sim_id and "SS_SMILE" in sim_id:
+        if sym_prefix in sim_id and "SS_SMILE" in sim_id:
             has_trade = True
-            pnl = broker.update_pnl(sim_id, current_prices)
+            pnl = broker.update_pnl(sim_id, current_prices, features=features)
             if pnl is not None:
                 with open(MTM_LOG, "a", newline="") as f:
                     csv.writer(f).writerow([datetime.now(), symbol, sim_id, round(pnl, 2), round(smile_z, 2)])
@@ -61,7 +63,7 @@ def evaluate_market_tick(
             {'symbol': f'CE_{atm_strike}', 'qty': qty, 'side': -1, 'price': ce_bid},
             {'symbol': f'PE_{atm_strike}', 'qty': qty, 'side': -1, 'price': pe_bid},
         ]
-        sim_id = f"SS_SMILE_{symbol.split(':')[1]}_{atm_strike}"
+        sim_id = f"SS_SMILE_{sym_prefix}_{atm_strike}"
         broker.virtual_place_basket(sim_id, margin_locked=qty*500, legs=legs, features=features, trigger=f"Z:{smile_z:.2f}")
         broker.positions[sim_id]['entry_credit'] = total_credit
         

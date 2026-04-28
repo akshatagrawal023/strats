@@ -22,6 +22,8 @@ from paper_trading.strategies.ratio_spread.scanner import evaluate_market_tick a
 from paper_trading.strategies.calendar_spread.scanner import evaluate_market_tick as eval_cs
 from paper_trading.strategies.backspread.scanner import evaluate_market_tick as eval_bs
 from paper_trading.strategies.VolTrade.scanner import evaluate_market_tick as eval_vt
+from paper_trading.strategies.Vol2.scanner import evaluate_market_tick as eval_v2
+from paper_trading.strategies.GammaScalp.scanner import evaluate_market_tick as eval_gs
 
 # Import shared central features
 from paper_trading.market_features import (
@@ -41,7 +43,8 @@ logging.basicConfig(
     handlers=[
         logging.FileHandler(os.path.join(SHARED_LOGS_DIR, "orchestrator.log")),
         logging.StreamHandler()
-    ]
+    ],
+    force=True
 )
 logger = logging.getLogger("Orchestrator")
 
@@ -64,7 +67,7 @@ async def main():
     
     pipeline = ProductionHFTPipeline(
         symbols=symbols,
-        strike_count=12,
+        strike_count=24,
         interval_seconds=1
     )
     
@@ -72,7 +75,7 @@ async def main():
     
     # Use the new dedicated HDF5 archives directory inside paper_trading
     archiver_dir = os.path.join(CURRENT_DIR, "hdf5_data_archives")
-    archiver = HDF5Archiver(output_dir=archiver_dir, flush_interval=60)
+    archivers = {sym: HDF5Archiver(symbol=sym, output_dir=archiver_dir, flush_interval=60) for sym in symbols}
     
     pipeline_task = asyncio.create_task(pipeline.run())
     
@@ -87,9 +90,11 @@ async def main():
         "BS": {sym: {} for sym in symbols},
         "CS": {sym: {} for sym in symbols},
         "VT": {sym: {} for sym in symbols},
+        "VOL2": {sym: {} for sym in symbols},
+        "GS": {sym: {} for sym in symbols},
     }
 
-    warmup_period = 20
+    warmup_period = 300
     last_global_mtm_print = time.time()
 
     logger.info("Starting Centralized Reactive Strategies...")
@@ -117,12 +122,19 @@ async def main():
                 
                 with buffer.lock:
                     spot = float(buffer.underlying_prices[-1])
+                    expiry_ts = float(buffer.expiry_dates[-1])
+                    T_val = float(buffer.T_values[-1])
+                    ts_now = float(buffer.timestamps[-1])
                     
                 ce_bid, ce_ask = mat[0], mat[1]
                 pe_bid, pe_ask = mat[2], mat[3]
                 strikes        = mat[10]
 
                 # 1. CENTRALIZED FEATURE CALCULATION
+                # Find ATM index safely
+                valid_strikes = ~np.isnan(greeks_mat[8])
+                if not np.any(valid_strikes): continue
+                
                 atm_idx = int(np.nanargmin(np.abs(greeks_mat[8] - 1.0)))
                 atm_iv = float(greeks_mat[6, atm_idx])
                 skew = compute_25delta_skew(greeks_mat)
@@ -151,41 +163,90 @@ async def main():
                     smile_z = compute_rolling_zscore(ms.spread_history)
                     panic, skew_z = detect_panic(ms.skew_history, skew, spot_stats)
                     
+                    # Detect if today is expiry (T < 0.003 is roughly < 12 hours)
+                    is_expiry_day = T_val < 0.005 
+
+                    # Gamma Surface (Gamma/Theta Ratio)
+                    ce_gamma = greeks_mat[1, atm_idx]
+                    pe_gamma = greeks_mat[1, atm_idx] # PE_Gamma is essentially same as CE_Gamma for ATM
+                    total_gamma = ce_gamma + pe_gamma
+
                     features.update({
                         'iv_z_score': iv_z,
                         'smile_z': smile_z,
                         'skew_z': skew_z,
                         'panic': panic,
                         'momentum': spot_stats['momentum'],
-                        'vol': spot_stats['ewm_vol']
+                        'acceleration': spot_stats['acceleration'],
+                        'vol': spot_stats['ewm_vol'],
+                        'is_expiry_day': is_expiry_day,
+                        'atm_gamma': total_gamma
                     })
 
-                # Prepare common prices structure for PnL
-                current_prices = {}
+                # 2. HDF5 RECORDING (Optional but requested)
+                archiver = archivers.get(symbol)
+                if archiver:
+                    mtm_snapshot = broker.get_latest_pnl_snapshot()
+                    archiver.record_tick(
+                        timestamp=ts_now,
+                        spot=spot,
+                        expiry_ts=expiry_ts,
+                        T=T_val,
+                        atm_iv=atm_iv,
+                        skew=skew,
+                        iv_z_score=features['iv_z_score'],
+                        panic_flag=features['panic'],
+                        spot_ewm_vol=features['vol'],
+                        raw_matrix=mat,
+                        greeks_matrix=greeks_mat,
+                        mtm_pnl=mtm_snapshot
+                    )
+
+                # 3. Prepare common prices structure for PnL
+                current_prices = {'spot': spot}
                 for i, k in enumerate(strikes):
                     if not np.isnan(k):
                         current_prices[f"CE_{int(k)}"] = {'bid': ce_bid[i], 'ask': ce_ask[i]}
                         current_prices[f"PE_{int(k)}"] = {'bid': pe_bid[i], 'ask': pe_ask[i]}
 
-                # Apply Quantity logic requested by user
-                qty = 650 if "NIFTY" in symbol else 200
+                # Apply Quantity logic requested by user: 20 lots 
+                # (Nifty 65 per lot -> 1300, Sensex 20 per lot -> 400)
+                qty = 1300 if "NIFTY" in symbol else 400
 
-                # 2. TRIGGER REACTIVE STRATEGIES
+                # 4. TRIGGER REACTIVE STRATEGIES
                 eval_args = (broker, symbol, qty, strikes, current_prices, greeks_mat, features)
                 
-                eval_ib(*eval_args, strategy_states["IB"][symbol])
-                eval_ds(*eval_args, strategy_states["DS"][symbol])
+                # eval_ib(*eval_args, strategy_states["IB"][symbol])
+                # eval_ds(*eval_args, strategy_states["DS"][symbol])
                 eval_rs(*eval_args, strategy_states["RS"][symbol])
                 eval_bs(*eval_args, strategy_states["BS"][symbol])
                 eval_cs(*eval_args, strategy_states["CS"][symbol])
                 eval_vt(*eval_args, strategy_states["VT"][symbol])
+                eval_v2(*eval_args, strategy_states["VOL2"][symbol])
+                eval_gs(*eval_args, strategy_states["GS"][symbol])
 
-            # Global Print every 15s instead of per-strategy
+            # Global Print every 15s with strategy breakup
             now = time.time()
             if now - last_global_mtm_print >= 15:
                 if broker.positions:
-                    total_pnl = sum(p.get('unrealized_pnl', 0.0) for p in broker.positions.values())
-                    logger.info(f"[GLOBAL MTM] Open Trades: {len(broker.positions)} | Total PnL: \u20b9{total_pnl:.2f}")
+                    total_pnl = 0.0
+                    strat_pnl = {}
+                    
+                    for sim_id, pos in broker.positions.items():
+                        pnl = pos.get('unrealized_pnl', 0.0)
+                        total_pnl += pnl
+                        
+                        s_name = "Other"
+                        if "VT_IC" in sim_id: s_name = "VolTrade"
+                        elif "SS_" in sim_id: s_name = "ShortStraddle"
+                        elif "GS_LONG" in sim_id: s_name = "GammaScalp"
+                        elif "VOL2" in sim_id: s_name = "Vol2"
+                        elif "BACKSPREAD" in sim_id: s_name = "Backspread"
+                        
+                        strat_pnl[s_name] = strat_pnl.get(s_name, 0.0) + pnl
+                    
+                    breakup_str = " | ".join([f"{k}: {v:+.0f}" for k, v in strat_pnl.items()])
+                    logger.info(f"[GLOBAL MTM] Open: {len(broker.positions)} | Total: ₹{total_pnl:+.2f} ({breakup_str})")
                 last_global_mtm_print = now
 
             # Sleep briefly to yield loop
@@ -197,7 +258,8 @@ async def main():
         pipeline.stop()
         await pipeline_task
         broker.flush_pnl_csv()
-        archiver.shutdown()
+        for arch in archivers.values():
+            arch.shutdown()
         logger.info("All resources flushed. Orchestrator shutdown complete.")
 
 if __name__ == "__main__":

@@ -172,12 +172,49 @@ def compute_smile_spread(greeks_mat: np.ndarray, atm_idx: int, wing_offset: int)
     return float(atm_iv - wing_iv)
 
 
+def compute_25delta_skew(greeks_mat: np.ndarray) -> float:
+    """
+    Compute the 25-delta risk-reversal skew.
+    Finds the strikes closest to delta = +0.25 (OTM call) and delta = -0.25 (OTM put),
+    then returns PE_IV - CE_IV at those strikes.
+
+    Positive value = puts more expensive than calls (normal for equity indices).
+    A spike indicates elevated downside fear or potential panic.
+
+    Args:
+        greeks_mat: np.ndarray shape (12, n_strikes)
+                    Ch 0 = CE Delta, Ch 6 = CE_IV, Ch 7 = PE_IV
+
+    Returns:
+        skew: float (PE_IV at 25d put strike) - (CE_IV at 25d call strike), or np.nan
+    """
+    deltas = greeks_mat[0]   # CE Deltas
+    ce_ivs = greeks_mat[6]   # CE IVs
+    pe_ivs = greeks_mat[7]   # PE IVs
+
+    valid = ~np.isnan(deltas) & ~np.isnan(ce_ivs) & ~np.isnan(pe_ivs)
+    if not np.any(valid):
+        return np.nan
+
+    v_deltas = deltas[valid]
+    v_ce_ivs = ce_ivs[valid]
+    v_pe_ivs = pe_ivs[valid]
+
+    # 25-delta call: CE delta closest to +0.25
+    call_idx = int(np.argmin(np.abs(v_deltas - 0.25)))
+    # 25-delta put: CE delta closest to -0.25 (put delta = CE delta - 1 by put-call parity)
+    put_idx = int(np.argmin(np.abs(v_deltas - 0.75)))  # delta ~0.75 CE = ~-0.25 PE delta
+
+    skew = float(v_pe_ivs[put_idx] - v_ce_ivs[call_idx])
+    return skew
+
+
 def compute_rolling_zscore(history: deque) -> float:
     """
     Generic rolling Z-Score calculation for any deque history.
     Returns 0.0 if insufficient history or zero variance.
     """
-    if len(history) < 60:  # Require 60 ticks (~3 mins at 3s) for a stable signal
+    if len(history) < 120:  # Require 120 ticks (1 min at 0.5s) for a stable signal
         return 0.0
     arr = np.array(history, dtype=np.float64)
     mu, sigma = np.mean(arr), np.std(arr)
@@ -225,11 +262,17 @@ def compute_spot_ewm_volatility(spot_history: deque, alpha: float = 0.06) -> dic
     momentum = latest - ewm_mean
     recent_drop = (ewm_mean - latest) / ewm_mean if ewm_mean > 0 else 0.0
 
+    # Track previous momentum to calculate acceleration (rate of change)
+    prev_ewm_mean = spots[-2] if len(spots) > 1 else spots[0]
+    prev_momentum = (spots[-2] - prev_ewm_mean) if len(spots) > 1 else 0.0
+    acceleration = momentum - prev_momentum
+
     return {
         'ewm_vol': float(ewm_vol),
         'ewm_mean': float(ewm_mean),
         'momentum': float(momentum),
-        'recent_drop': float(recent_drop),  # positive = spot below EWM mean
+        'acceleration': float(acceleration),
+        'recent_drop': float(recent_drop),  
     }
 
 

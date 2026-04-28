@@ -25,6 +25,8 @@ class VirtualBroker:
         elif "BACKSPREAD" in sim_id: return "backspread"
         elif "BULL_SPREAD" in sim_id or "BEAR_SPREAD" in sim_id: return "directional_spread"
         elif "CALENDAR" in sim_id: return "calendar_spread"
+        elif "VT_IC" in sim_id: return "VolTrade"
+        elif "SS_" in sim_id: return "ShortStraddle"
         return "unknown"
 
     def _log_trade_event(self, sim_id, event_type, legs, cost, pnl, features=None, trigger=""):

@@ -6,82 +6,87 @@ def evaluate_market_tick(
     greeks_mat, features, state_dict
 ):
     """
-    Reactive evaluate function for Directional Spread.
+    Directional Spread — Trend-Hunter Mode.
+    Only enters during high-momentum trending phases.
     """
-    strat_logger = logging.getLogger("DirectionalSpread")
+    logger = logging.getLogger("DirSpread")
     
-    if "last_exit_time" not in state_dict:
-        state_dict["last_exit_time"] = 0
-
-    EXIT_COOLDOWN_SEC = 300
-    MOMENTUM_CONFIRMATION_MULT = 1.8
-
-    atm_idx = features['atm_idx']
-    momentum = features['momentum']
-    vol = features['vol']
-    panic = features['panic']
-    ce_iv_vel = features.get('ce_iv_vel', 0.0)
-    pe_iv_vel = features.get('pe_iv_vel', 0.0)
+    momentum = features.get('momentum', 0.0)
+    panic = features.get('panic', False)
+    atm_idx = features.get('atm_idx')
     
-    if momentum is None:
-        return # Warmup phase
+    if atm_idx is None: return
 
     sym_prefix = symbol.split(":")[1].split("-")[0]
 
-    # --- EXIT MANAGEMENT ---
+    # --- POSITION TRACKING & DYNAMIC EXIT ---
+    has_trade = False
     for sim_id in list(broker.positions.keys()):
-        if f"{sym_prefix}_BULL_SPREAD" in sim_id or f"{sym_prefix}_BEAR_SPREAD" in sim_id:
-            pnl = broker.update_pnl(sim_id, current_prices, features=features)
-            if pnl is not None:
-                margin = broker.positions[sim_id]['margin_locked']
-                if pnl > margin * 0.05:
-                    strat_logger.info(f"[TAKE PROFIT] {sim_id} at 5%. Closing.")
-                    broker.virtual_close_all(sim_id, current_prices, features=features, trigger="TP_5%")
-                    state_dict["last_exit_time"] = time.time()
-                elif pnl < -margin * 0.20:
-                    strat_logger.info(f"[STOP LOSS] {sim_id} at 20%. Closing.")
-                    broker.virtual_close_all(sim_id, current_prices, features=features, trigger="SL_20%")
-                    state_dict["last_exit_time"] = time.time()
+        if sym_prefix in sim_id and ("BULL" in sim_id or "BEAR" in sim_id):
+            has_trade = True
+            broker.update_pnl(sim_id, current_prices, features=features)
+            
+            # --- MOMENTUM EXHAUSTION EXIT ---
+            # If the trend weakens significantly, exit to preserve alpha
+            if "BULL" in sim_id and momentum < 3.0:
+                logger.info(f"[TREND EXHAUST] {sim_id} Momentum dropped to {momentum:.1f}. Closing Bull Spread.")
+                broker.virtual_close_all(sim_id, current_prices, features=features, trigger="TREND_WEAK")
+                state_dict['last_exit_time'] = time.time()
+                continue
+            elif "BEAR" in sim_id and momentum > -3.0:
+                logger.info(f"[TREND EXHAUST] {sim_id} Momentum rose to {momentum:.1f}. Closing Bear Spread.")
+                broker.virtual_close_all(sim_id, current_prices, features=features, trigger="TREND_WEAK")
+                state_dict['last_exit_time'] = time.time()
+                continue
 
-    # --- ENTRY TRIGGER ---
-    if (time.time() - state_dict["last_exit_time"]) > EXIT_COOLDOWN_SEC:
-        is_bullish_burst = (momentum > vol * MOMENTUM_CONFIRMATION_MULT) and (not panic)
-        is_bearish_burst = (momentum < -vol * MOMENTUM_CONFIRMATION_MULT)
+    # --- ENTRY TRIGGER (Trend-Hunter Mode) ---
+    # COOLDOWN: 120s lockout after any trade exit
+    last_exit = state_dict.get('last_exit_time', 0)
+    cooldown_active = (time.time() - last_exit) < 120
+    
+    # THRESHOLDS:
+    # Requires STRONG momentum (abs > 10.0) and NO panic
+    if not has_trade and not cooldown_active and not panic:
         
-        has_bull_trade = any(f"{sym_prefix}_BULL" in k for k in broker.positions.keys())
-        has_bear_trade = any(f"{sym_prefix}_BEAR" in k for k in broker.positions.keys())
+        if momentum > 10.0:  # BULL CASE
+            logger.info(f"[{symbol} BULL ENTRY] Strong Up-Trend (Mom:{momentum:.1f}).")
+            s_base = int(strikes[atm_idx])
+            s_long = s_base
+            s_short = s_base + (50 if "NIFTY" in sym_prefix else 200)
+            
+            try:
+                l_price = current_prices[f"CE_{s_long}"]['ask']
+                s_price = current_prices[f"CE_{s_short}"]['bid']
+                
+                legs = [
+                    {'symbol': f'CE_{s_long}',  'qty': qty, 'side': 1,  'price': l_price},
+                    {'symbol': f'CE_{s_short}', 'qty': qty, 'side': -1, 'price': s_price},
+                ]
+                sim_id = f"{sym_prefix}_BULL_ST_{s_long}"
+                margin = (s_short - s_long) * qty
+                broker.virtual_place_basket(sim_id, margin, legs, features=features)
+                logger.info(f"[ENTRY] {sim_id} Trend-Hunter Bull Spread Placed.")
+            except KeyError: pass
 
-        if is_bullish_burst and not has_bull_trade:
-            if ce_iv_vel > -0.001:
-                up_idx = atm_idx + 2
-                if up_idx < len(strikes):
-                    s_atm = int(strikes[atm_idx])
-                    s_otm = int(strikes[up_idx])
-                    legs = [
-                        {'symbol': f'CE_{s_atm}', 'qty': qty, 'side':  1, 'price': current_prices[f"CE_{s_atm}"]['ask']},
-                        {'symbol': f'CE_{s_otm}', 'qty': qty, 'side': -1, 'price': current_prices[f"CE_{s_otm}"]['bid']},
-                    ]
-                    sim_id = f"{sym_prefix}_BULL_SPREAD_{s_atm}_{s_otm}"
-                    margin = (current_prices[f"CE_{s_atm}"]['ask'] - current_prices[f"CE_{s_otm}"]['bid']) * qty
-                    trigger_msg = f"Mom:{momentum:.2f} (IV:{ce_iv_vel:.4f})"
-                    broker.virtual_place_basket(sim_id, margin, legs, features=features, trigger=trigger_msg)
-                    strat_logger.info(f"[ENTRY] {symbol} Bullish Momentum: {momentum:.2f} (IV Vel: {ce_iv_vel:.4f})")
-
-        elif is_bearish_burst and not has_bear_trade:
-            if pe_iv_vel > -0.001:
-                dn_idx = atm_idx - 2
-                if dn_idx >= 0:
-                    s_atm = int(strikes[atm_idx])
-                    s_otm = int(strikes[dn_idx])
-                    legs = [
-                        {'symbol': f'PE_{s_atm}', 'qty': qty, 'side':  1, 'price': current_prices[f"PE_{s_atm}"]['ask']},
-                        {'symbol': f'PE_{s_otm}', 'qty': qty, 'side': -1, 'price': current_prices[f"PE_{s_otm}"]['bid']},
-                    ]
-                    sim_id = f"{sym_prefix}_BEAR_SPREAD_{s_atm}_{s_otm}"
-                    margin = (current_prices[f"PE_{s_atm}"]['ask'] - current_prices[f"PE_{s_otm}"]['bid']) * qty
-                    trigger_msg = f"Mom:{momentum:.2f} (IV:{pe_iv_vel:.4f})"
-                    broker.virtual_place_basket(sim_id, margin, legs, features=features, trigger=trigger_msg)
-                    strat_logger.info(f"[ENTRY] {symbol} Bearish Momentum: {momentum:.2f} (IV Vel: {pe_iv_vel:.4f})")
+        elif momentum < -10.0: # BEAR CASE
+            logger.info(f"[{symbol} BEAR ENTRY] Strong Down-Trend (Mom:{momentum:.1f}).")
+            s_base = int(strikes[atm_idx])
+            s_long = s_base
+            s_short = s_base - (50 if "NIFTY" in sym_prefix else 200)
+            
+            try:
+                l_price = current_prices[f"PE_{s_long}"]['ask']
+                s_price = current_prices[f"PE_{s_short}"]['bid']
+                
+                legs = [
+                    {'symbol': f'PE_{s_long}',  'qty': qty, 'side': 1,  'price': l_price},
+                    {'symbol': f'PE_{s_short}', 'qty': qty, 'side': -1, 'price': s_price},
+                ]
+                sim_id = f"{sym_prefix}_BEAR_ST_{s_long}"
+                margin = (s_long - s_short) * qty
+                broker.virtual_place_basket(sim_id, margin, legs, features=features)
+                logger.info(f"[ENTRY] {sim_id} Trend-Hunter Bear Spread Placed.")
+            except KeyError: pass
 
 if __name__ == "__main__":
     import asyncio
